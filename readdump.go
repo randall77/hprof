@@ -15,7 +15,7 @@ const hchansize = 11 * 8
 
 type Dump struct {
 	bigEndian  bool
-	ptrSize    int
+	ptrSize    int		// in bytes
 	types      []*Type
 	objects    []*Object
 	frames     []*Frame
@@ -275,12 +275,12 @@ func link(d *Dump) {
 			// simple object
 			for _, offset := range t.ptrs {
 				s := x.data[offset : offset+8]
-				p := readPtr(s)
+				p := readPtr(d, s)
 				q := heap.find(p)
 				if q == nil {
-					writePtr(s, 0)
+					writePtr(d, s, 0)
 				} else {
-					writePtr(s, q.addr)
+					writePtr(d, s, q.addr)
 					x.edges = append(x.edges, q)
 				}
 			}
@@ -289,12 +289,12 @@ func link(d *Dump) {
 			for i := uint64(0); i < uint64(len(x.data))/t.size; i++ {
 				for _, offset := range t.ptrs {
 					s := x.data[i*t.size+offset : i*t.size+offset+8]
-					p := readPtr(s)
+					p := readPtr(d, s)
 					q := heap.find(p)
 					if q == nil {
-						writePtr(s, 0)
+						writePtr(d, s, 0)
 					} else {
-						writePtr(s, q.addr)
+						writePtr(d, s, q.addr)
 						x.edges = append(x.edges, q)
 					}
 				}
@@ -304,12 +304,12 @@ func link(d *Dump) {
 			for i := uint64(0); i < uint64(len(x.data)-hchansize)/t.size; i++ {
 				for _, offset := range t.ptrs {
 					s := x.data[hchansize+i*t.size+offset : hchansize+i*t.size+offset+8]
-					p := readPtr(s)
+					p := readPtr(d, s)
 					q := heap.find(p)
 					if q == nil {
-						writePtr(s, 0)
+						writePtr(d, s, 0)
 					} else {
-						writePtr(s, q.addr)
+						writePtr(d, s, q.addr)
 						x.edges = append(x.edges, q)
 					}
 				}
@@ -324,17 +324,51 @@ func Read(filename string) *Dump {
 	return d
 }
 
-// TODO: depends on endianness & word size of dumper.  Record in dump.
-func readPtr(b []byte) uint64 {
-	return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24 + uint64(b[4])<<32 + uint64(b[5])<<40 + uint64(b[6])<<48 + uint64(b[7])<<56
+func readPtr(d *Dump, b []byte) uint64 {
+	switch {
+	case !d.bigEndian && d.ptrSize == 4:
+		return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24
+	case d.bigEndian && d.ptrSize == 4:
+		return uint64(b[3]) + uint64(b[2])<<8 + uint64(b[1])<<16 + uint64(b[0])<<24
+	case !d.bigEndian && d.ptrSize == 8:
+		return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24 + uint64(b[4])<<32 + uint64(b[5])<<40 + uint64(b[6])<<48 + uint64(b[7])<<56
+	case d.bigEndian && d.ptrSize == 8:
+		return uint64(b[7]) + uint64(b[6])<<8 + uint64(b[5])<<16 + uint64(b[4])<<24 + uint64(b[3])<<32 + uint64(b[2])<<40 + uint64(b[1])<<48 + uint64(b[0])<<56
+	default:
+		panic(fmt.Sprintf("unsupported bigEndian=%v ptrSize=%d", d.bigEndian, d.ptrSize))
+	}
 }
-func writePtr(b []byte, v uint64) {
-	b[0] = byte(v >> 0)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-	b[4] = byte(v >> 32)
-	b[5] = byte(v >> 40)
-	b[6] = byte(v >> 48)
-	b[7] = byte(v >> 56)
+func writePtr(d *Dump, b []byte, v uint64) {
+	switch {
+	case !d.bigEndian && d.ptrSize == 4:
+		b[0] = byte(v >> 0)
+		b[1] = byte(v >> 8)
+		b[2] = byte(v >> 16)
+		b[3] = byte(v >> 24)
+	case d.bigEndian && d.ptrSize == 4:
+		b[3] = byte(v >> 0)
+		b[2] = byte(v >> 8)
+		b[1] = byte(v >> 16)
+		b[0] = byte(v >> 24)
+	case !d.bigEndian && d.ptrSize == 8:
+		b[0] = byte(v >> 0)
+		b[1] = byte(v >> 8)
+		b[2] = byte(v >> 16)
+		b[3] = byte(v >> 24)
+		b[4] = byte(v >> 32)
+		b[5] = byte(v >> 40)
+		b[6] = byte(v >> 48)
+		b[7] = byte(v >> 56)
+	case d.bigEndian && d.ptrSize == 8:
+		b[7] = byte(v >> 0)
+		b[6] = byte(v >> 8)
+		b[5] = byte(v >> 16)
+		b[4] = byte(v >> 24)
+		b[3] = byte(v >> 32)
+		b[2] = byte(v >> 40)
+		b[1] = byte(v >> 48)
+		b[0] = byte(v >> 56)
+	default:
+		panic(fmt.Sprintf("unsupported bigEndian=%v ptrSize=%d", d.bigEndian, d.ptrSize))
+	}
 }
