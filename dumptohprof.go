@@ -473,7 +473,7 @@ func addHeapDump() {
 		}
 		dump = append(dump, 0x01) // root jni global
 		dump = appendId(dump, t.to.addr)
-		dump = appendId(dump, 0) // jni global ref id
+		dump = appendId(dump, t.fromaddr) // jni global ref id
 	}
 	for _, t := range d.otherroots {
 		if t.to == nil {

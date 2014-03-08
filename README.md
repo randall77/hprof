@@ -72,8 +72,9 @@ stackroot:
 
 dataroot:
   5       uvarint
+  addr    uvarint     address where pointer was found
   rootptr uvarint     possible ptr to an object
-  TODO: containing symbol & offset?
+  TODO: containing symbol & offset?  Might need to use dwarf to figure that out
 
 otherroot:
   6       uvarint

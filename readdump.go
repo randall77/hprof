@@ -45,6 +45,7 @@ type StackRoot struct {
 type DataRoot struct {
 	to *Object
 
+	fromaddr uint64
 	toaddr uint64
 }
 type OtherRoot struct {
@@ -141,6 +142,7 @@ func rawRead(filename string) *Dump {
 			d.stackroots = append(d.stackroots, t)
 		case 5:
 			t := &DataRoot{}
+			t.fromaddr = readUint64(r)
 			t.toaddr = readUint64(r)
 			d.dataroots = append(d.dataroots, t)
 		case 6:
