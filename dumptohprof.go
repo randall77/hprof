@@ -105,7 +105,7 @@ func main() {
 	addHeapDump()
 
 	// write final file to output
-	file, err := os.Create(args[1])
+	file, err := os.Create(args[2])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -380,20 +380,20 @@ func ChanClass(t *Type, size uint64) uint64 {
 	if c == 0 {
 		c = newId()
 		f := make([]Field, size/8)
-		nelem := (size - hchansize) / t.size
+		nelem := (size - d.hChanSize) / t.size
 		for i := uint64(0); i < size/8; i++ {
 			f[i].kind = 11 // long
-			if i*8 < hchansize {
+			if i*8 < d.hChanSize {
 				f[i].name = "chanhdr"
-			} else if i*8 < hchansize+t.size*nelem {
-				f[i].name = fmt.Sprintf("f%03d_%03d", (i*8-hchansize)/t.size, (i*8-hchansize)%t.size)
+			} else if i*8 < d.hChanSize+t.size*nelem {
+				f[i].name = fmt.Sprintf("f%03d_%03d", (i*8-d.hChanSize)/t.size, (i*8-d.hChanSize)%t.size)
 			} else {
 				f[i].name = "sizeclass_pad"
 			}
 		}
 		for i := uint64(0); i < nelem; i++ {
 			for _, offset := range t.ptrs {
-				f[(hchansize+i*t.size+offset)/8].kind = 2 // Object
+				f[(d.hChanSize+i*t.size+offset)/8].kind = 2 // Object
 			}
 		}
 		addClass(c, size, t.name+"{"+fmt.Sprintf("%d", nelem)+"}", f)
@@ -459,28 +459,28 @@ func addHeapDump() {
 
 	// output roots
 	for _, t := range d.stackroots {
-		if t.to == nil {
+		if t.e.to == nil {
 			continue
 		}
 		dump = append(dump, 0x03) // root java frame
-		dump = appendId(dump, t.to.addr)
+		dump = appendId(dump, t.e.to.addr)
 		dump = append32(dump, threadSerialNumbers[t.frame.thread])
 		dump = append32(dump, uint32(t.frame.depth))
 	}
 	for _, t := range d.dataroots {
-		if t.to == nil {
+		if t.e.to == nil {
 			continue
 		}
 		dump = append(dump, 0x01) // root jni global
-		dump = appendId(dump, t.to.addr)
+		dump = appendId(dump, t.e.to.addr)
 		dump = appendId(dump, t.fromaddr) // jni global ref id
 	}
 	for _, t := range d.otherroots {
-		if t.to == nil {
+		if t.e.to == nil {
 			continue
 		}
 		dump = append(dump, 0xff) // root unknown
-		dump = appendId(dump, t.to.addr)
+		dump = appendId(dump, t.e.to.addr)
 	}
 
 	addTag(0x0c, dump)

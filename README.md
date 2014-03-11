@@ -67,6 +67,7 @@ eof:
 
 stackroot:
   4       uvarint
+  addr    uvarint     address where pointer was found
   rootptr uvarint     possible ptr to an object
   frame   uvarint     sp of frame this pointer came from
 
@@ -74,12 +75,11 @@ dataroot:
   5       uvarint
   addr    uvarint     address where pointer was found
   rootptr uvarint     possible ptr to an object
-  TODO: containing symbol & offset?  Might need to use dwarf to figure that out
 
 otherroot:
   6       uvarint
+  description string
   rootptr uvarint     possible ptr to an object
-  TODO: some sort of description of otherness?
 
 type:
   7       uvarint
@@ -102,6 +102,12 @@ stack frame:
   name    string      function name
 
 dump params:
-  10      uvarint
-  endian  uvarint     0=little endian, 1=big endian
-  ptrsize uvarint     ptr size in bits.  4 or 8
+  10        uvarint
+  endian    uvarint     0=little endian, 1=big endian
+  ptrsize   uvarint     ptr size in bytes.  4 or 8
+  hchansize uvarint     size of channel header in bytes.
+
+finalizer data:
+  11        uvarint
+  obj       uvarint    object that has a finalizer
+  addr      uvarint    data needed by that finalizer

@@ -2,22 +2,20 @@ package main
 
 import (
 	"bufio"
+	"debug/dwarf"
+	"debug/elf"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"sort"
-	"debug/elf"
-	"debug/dwarf"
 )
-
-// TODO: encode in dump
-const hchansize = 11 * 8
 
 type Dump struct {
 	order      binary.ByteOrder
-	ptrSize    int // in bytes
+	ptrSize    uint64 // in bytes
+	hChanSize  uint64
 	types      []*Type
 	objects    []*Object
 	frames     []*Frame
@@ -25,37 +23,56 @@ type Dump struct {
 	stackroots []*StackRoot
 	dataroots  []*DataRoot
 	otherroots []*OtherRoot
+	finalizers []*Finalizer
+}
+
+// An edge is a directed connection between two objects.  The source
+// object is not explicitly specified.  It includes information about
+// where the edge leaves the source object and where it lands in the
+// destination obj.
+type Edge struct {
+	to         *Object // object pointed to
+	fromoffset uint64  // offset in source object where ptr was found
+	tooffset   uint64  // offset in destination object pointer points to
 }
 
 type Object struct {
 	typ   *Type
 	kind  uint64
 	data  []byte // length is sizeclass size, may be bigger then typ.size
-	edges []*Object
+	edges []Edge
 
 	addr    uint64
 	typaddr uint64
 }
 
 type StackRoot struct {
-	to    *Object
 	frame *Frame
+	e     Edge
 
+	fromaddr  uint64
 	toaddr    uint64
 	frameaddr uint64
 }
 type DataRoot struct {
-	name string    // name of data object
-	offset uint64  // offset in data object
-	to *Object
+	name string // name of data object
+	e    Edge
 
 	fromaddr uint64
 	toaddr   uint64
 }
 type OtherRoot struct {
-	to *Object
+	description string
+	e           Edge
 
 	toaddr uint64
+}
+
+// Object fromaddr has a finalizer that requires
+// data from toaddr.
+type Finalizer struct {
+	fromaddr uint64
+	toaddr   uint64
 }
 
 type Type struct {
@@ -141,6 +158,7 @@ func rawRead(filename string) *Dump {
 			return &d
 		case 4:
 			t := &StackRoot{}
+			t.fromaddr = readUint64(r)
 			t.toaddr = readUint64(r)
 			t.frameaddr = readUint64(r)
 			d.stackroots = append(d.stackroots, t)
@@ -151,6 +169,7 @@ func rawRead(filename string) *Dump {
 			d.dataroots = append(d.dataroots, t)
 		case 6:
 			t := &OtherRoot{}
+			t.description = readString(r)
 			t.toaddr = readUint64(r)
 			d.otherroots = append(d.otherroots, t)
 		case 7:
@@ -186,7 +205,13 @@ func rawRead(filename string) *Dump {
 			} else {
 				d.order = binary.BigEndian
 			}
-			d.ptrSize = int(readUint64(r))
+			d.ptrSize = readUint64(r)
+			d.hChanSize = readUint64(r)
+		case 11:
+			t := &Finalizer{}
+			t.fromaddr = readUint64(r)
+			t.toaddr = readUint64(r)
+			d.finalizers = append(d.finalizers, t)
 		default:
 			panic("bad kind " + fmt.Sprintf("%d", kind))
 		}
@@ -214,31 +239,32 @@ type Global struct {
 }
 type Globals []Global
 
-func (g Globals) Len() int     { return len(g) }
-func (g Globals) Swap(i, j int) { g[i], g[j] = g[j], g[i] }
+func (g Globals) Len() int           { return len(g) }
+func (g Globals) Swap(i, j int)      { g[i], g[j] = g[j], g[i] }
 func (g Globals) Less(i, j int) bool { return g[i].addr < g[j].addr }
+
 // returns the global containing the given address
 func (g Globals) find(p uint64) Global {
 	j := sort.Search(len(g), func(i int) bool { return p < g[i].addr })
 	if j == 0 {
-		return Global{"none",0}
+		return Global{"none", 0}
 	}
 	return g[j-1]
 }
 
-func globalMap(execname string) Globals {
+func globalMap(d *Dump, execname string) Globals {
 	var g Globals
 	f, err := elf.Open(execname)
 	if err != nil {
 		panic(err)
 	}
 	//defer f.Close()
-	d, err := f.DWARF()
+	w, err := f.DWARF()
 	if err != nil {
 		panic(err)
 	}
-	r := d.Reader()
-	for ;; {
+	r := w.Reader()
+	for {
 		e, err := r.Next()
 		if err != nil {
 			panic(err)
@@ -252,8 +278,7 @@ func globalMap(execname string) Globals {
 		name := e.Val(dwarf.AttrName).(string)
 		locexpr := e.Val(dwarf.AttrLocation).([]uint8)
 		if len(locexpr) > 0 && locexpr[0] == 0x03 { // DW_OP_addr
-			// TODO: endian/addrsize
-			loc := uint64(locexpr[1]) + uint64(locexpr[2])<<8 + uint64(locexpr[3])<<16 + uint64(locexpr[4])<<24 + uint64(locexpr[5])<<32 + uint64(locexpr[6])<<40 + uint64(locexpr[7])<<48 + uint64(locexpr[8])<<56
+			loc := readPtr(d, locexpr[1:])
 			g = append(g, Global{name, loc})
 		}
 	}
@@ -262,7 +287,7 @@ func globalMap(execname string) Globals {
 }
 
 func link(d *Dump, execname string) {
-	globals := globalMap(execname)
+	globals := globalMap(d, execname)
 	types := make(map[uint64]*Type, len(d.types))
 	frames := make(map[uint64]*Frame, len(d.frames))
 	for _, x := range d.types {
@@ -312,19 +337,27 @@ func link(d *Dump, execname string) {
 	}
 	sort.Sort(heap)
 
-	// link up roots
+	// link up roots to objects
 	for _, r := range d.stackroots {
-		r.to = heap.find(r.toaddr)
 		r.frame = frames[r.frameaddr]
+		x := heap.find(r.toaddr)
+		if x != nil {
+			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr}
+		}
 	}
 	for _, r := range d.dataroots {
-		r.to = heap.find(r.toaddr)
 		g := globals.find(r.fromaddr)
 		r.name = g.name
-		r.offset = r.fromaddr - g.addr
+		q := heap.find(r.toaddr)
+		if q != nil {
+			r.e = Edge{q, r.fromaddr - g.addr, r.toaddr - q.addr}
+		}
 	}
 	for _, r := range d.otherroots {
-		r.to = heap.find(r.toaddr)
+		x := heap.find(r.toaddr)
+		if x != nil {
+			r.e = Edge{x, 0, r.toaddr - x.addr}
+		}
 	}
 
 	// link objects to each other
@@ -337,46 +370,56 @@ func link(d *Dump, execname string) {
 		case 0:
 			// simple object
 			for _, offset := range t.ptrs {
-				s := x.data[offset : offset+8]
+				s := x.data[offset:]
 				p := readPtr(d, s)
 				q := heap.find(p)
 				if q == nil {
 					writePtr(d, s, 0)
 				} else {
 					writePtr(d, s, q.addr)
-					x.edges = append(x.edges, q)
+					x.edges = append(x.edges, Edge{q, offset, p - q.addr})
 				}
 			}
 		case 1:
 			// array object
 			for i := uint64(0); i < uint64(len(x.data))/t.size; i++ {
 				for _, offset := range t.ptrs {
-					s := x.data[i*t.size+offset : i*t.size+offset+8]
+					s := x.data[i*t.size+offset:]
 					p := readPtr(d, s)
 					q := heap.find(p)
 					if q == nil {
 						writePtr(d, s, 0)
 					} else {
 						writePtr(d, s, q.addr)
-						x.edges = append(x.edges, q)
+						x.edges = append(x.edges, Edge{q, i*t.size + offset, p - q.addr})
 					}
 				}
 			}
 		case 2:
 			// channel object.
-			for i := uint64(0); i < uint64(len(x.data)-hchansize)/t.size; i++ {
+			for i := uint64(0); i < (uint64(len(x.data))-d.hChanSize)/t.size; i++ {
 				for _, offset := range t.ptrs {
-					s := x.data[hchansize+i*t.size+offset : hchansize+i*t.size+offset+8]
+					s := x.data[d.hChanSize+i*t.size+offset:]
 					p := readPtr(d, s)
 					q := heap.find(p)
 					if q == nil {
 						writePtr(d, s, 0)
 					} else {
 						writePtr(d, s, q.addr)
-						x.edges = append(x.edges, q)
+						x.edges = append(x.edges, Edge{q, d.hChanSize + i*t.size + offset, p - q.addr})
 					}
 				}
 			}
+		}
+	}
+
+	// Add links for finalizers
+	for _, f := range d.finalizers {
+		x := heap.find(f.fromaddr)
+		y := heap.find(f.toaddr)
+		if x != nil && y != nil {
+			x.edges = append(x.edges, Edge{x, 0, f.toaddr - y.addr})
+			// TODO: mark edge as finalizer-dependent somehow?
 		}
 	}
 }
