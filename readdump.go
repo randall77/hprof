@@ -14,8 +14,8 @@ import (
 const hchansize = 11 * 8
 
 type Dump struct {
-	bigEndian  bool
-	ptrSize    int		// in bytes
+	order      binary.ByteOrder
+	ptrSize    int // in bytes
 	types      []*Type
 	objects    []*Object
 	frames     []*Frame
@@ -46,7 +46,7 @@ type DataRoot struct {
 	to *Object
 
 	fromaddr uint64
-	toaddr uint64
+	toaddr   uint64
 }
 type OtherRoot struct {
 	to *Object
@@ -178,9 +178,9 @@ func rawRead(filename string) *Dump {
 			d.frames = append(d.frames, t)
 		case 10:
 			if readUint64(r) == 0 {
-				d.bigEndian = false
+				d.order = binary.LittleEndian
 			} else {
-				d.bigEndian = true
+				d.order = binary.BigEndian
 			}
 			d.ptrSize = int(readUint64(r))
 		default:
@@ -320,39 +320,39 @@ func link(d *Dump) {
 	}
 }
 
-func Read(filename string) *Dump {
-	d := rawRead(filename)
+func Read(dumpname) *Dump {
+	d := rawRead(dumpname)
 	link(d)
 	return d
 }
 
 func readPtr(d *Dump, b []byte) uint64 {
 	switch {
-	case !d.bigEndian && d.ptrSize == 4:
+	case d.order == binary.LittleEndian && d.ptrSize == 4:
 		return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24
-	case d.bigEndian && d.ptrSize == 4:
+	case d.order == binary.BigEndian && d.ptrSize == 4:
 		return uint64(b[3]) + uint64(b[2])<<8 + uint64(b[1])<<16 + uint64(b[0])<<24
-	case !d.bigEndian && d.ptrSize == 8:
+	case d.order == binary.LittleEndian && d.ptrSize == 8:
 		return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24 + uint64(b[4])<<32 + uint64(b[5])<<40 + uint64(b[6])<<48 + uint64(b[7])<<56
-	case d.bigEndian && d.ptrSize == 8:
+	case d.order == binary.BigEndian && d.ptrSize == 8:
 		return uint64(b[7]) + uint64(b[6])<<8 + uint64(b[5])<<16 + uint64(b[4])<<24 + uint64(b[3])<<32 + uint64(b[2])<<40 + uint64(b[1])<<48 + uint64(b[0])<<56
 	default:
-		panic(fmt.Sprintf("unsupported bigEndian=%v ptrSize=%d", d.bigEndian, d.ptrSize))
+		panic(fmt.Sprintf("unsupported order=%v ptrSize=%d", d.order, d.ptrSize))
 	}
 }
 func writePtr(d *Dump, b []byte, v uint64) {
 	switch {
-	case !d.bigEndian && d.ptrSize == 4:
+	case d.order == binary.LittleEndian && d.ptrSize == 4:
 		b[0] = byte(v >> 0)
 		b[1] = byte(v >> 8)
 		b[2] = byte(v >> 16)
 		b[3] = byte(v >> 24)
-	case d.bigEndian && d.ptrSize == 4:
+	case d.order == binary.BigEndian && d.ptrSize == 4:
 		b[3] = byte(v >> 0)
 		b[2] = byte(v >> 8)
 		b[1] = byte(v >> 16)
 		b[0] = byte(v >> 24)
-	case !d.bigEndian && d.ptrSize == 8:
+	case d.order == binary.LittleEndian && d.ptrSize == 8:
 		b[0] = byte(v >> 0)
 		b[1] = byte(v >> 8)
 		b[2] = byte(v >> 16)
@@ -361,7 +361,7 @@ func writePtr(d *Dump, b []byte, v uint64) {
 		b[5] = byte(v >> 40)
 		b[6] = byte(v >> 48)
 		b[7] = byte(v >> 56)
-	case d.bigEndian && d.ptrSize == 8:
+	case d.order == binary.BigEndian && d.ptrSize == 8:
 		b[7] = byte(v >> 0)
 		b[6] = byte(v >> 8)
 		b[5] = byte(v >> 16)
@@ -371,6 +371,6 @@ func writePtr(d *Dump, b []byte, v uint64) {
 		b[1] = byte(v >> 48)
 		b[0] = byte(v >> 56)
 	default:
-		panic(fmt.Sprintf("unsupported bigEndian=%v ptrSize=%d", d.bigEndian, d.ptrSize))
+		panic(fmt.Sprintf("unsupported order=%v ptrSize=%d", d.order, d.ptrSize))
 	}
 }
