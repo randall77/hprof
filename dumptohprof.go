@@ -60,7 +60,7 @@ var stackTraceSerialNumbers map[*Thread]uint32
 func main() {
 	flag.Parse()
 	args := flag.Args()
-	d = Read(args[0])
+	d = Read(args[0], args[1])
 
 	// some setup
 	usedIds = make(map[uint64]struct{}, 0)

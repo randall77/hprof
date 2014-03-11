@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"sort"
+	"debug/elf"
+	"debug/dwarf"
 )
 
 // TODO: encode in dump
@@ -43,6 +45,8 @@ type StackRoot struct {
 	frameaddr uint64
 }
 type DataRoot struct {
+	name string    // name of data object
+	offset uint64  // offset in data object
 	to *Object
 
 	fromaddr uint64
@@ -204,7 +208,61 @@ func (h Heap) find(p uint64) *Object {
 	return nil
 }
 
-func link(d *Dump) {
+type Global struct {
+	name string
+	addr uint64
+}
+type Globals []Global
+
+func (g Globals) Len() int     { return len(g) }
+func (g Globals) Swap(i, j int) { g[i], g[j] = g[j], g[i] }
+func (g Globals) Less(i, j int) bool { return g[i].addr < g[j].addr }
+// returns the global containing the given address
+func (g Globals) find(p uint64) Global {
+	j := sort.Search(len(g), func(i int) bool { return p < g[i].addr })
+	if j == 0 {
+		return Global{"none",0}
+	}
+	return g[j-1]
+}
+
+func globalMap(execname string) Globals {
+	var g Globals
+	f, err := elf.Open(execname)
+	if err != nil {
+		panic(err)
+	}
+	//defer f.Close()
+	d, err := f.DWARF()
+	if err != nil {
+		panic(err)
+	}
+	r := d.Reader()
+	for ;; {
+		e, err := r.Next()
+		if err != nil {
+			panic(err)
+		}
+		if e == nil {
+			break
+		}
+		if e.Tag != dwarf.TagVariable {
+			continue
+		}
+		name := e.Val(dwarf.AttrName).(string)
+		locexpr := e.Val(dwarf.AttrLocation).([]uint8)
+		if len(locexpr) > 0 && locexpr[0] == 0x03 { // DW_OP_addr
+			// TODO: endian/addrsize
+			loc := uint64(locexpr[1]) + uint64(locexpr[2])<<8 + uint64(locexpr[3])<<16 + uint64(locexpr[4])<<24 + uint64(locexpr[5])<<32 + uint64(locexpr[6])<<40 + uint64(locexpr[7])<<48 + uint64(locexpr[8])<<56
+			g = append(g, Global{name, loc})
+		}
+	}
+	sort.Sort(g)
+	return g
+}
+
+func link(d *Dump, execname string) {
+	globals := globalMap(execname)
 	types := make(map[uint64]*Type, len(d.types))
 	frames := make(map[uint64]*Frame, len(d.frames))
 	for _, x := range d.types {
@@ -261,6 +319,9 @@ func link(d *Dump) {
 	}
 	for _, r := range d.dataroots {
 		r.to = heap.find(r.toaddr)
+		g := globals.find(r.fromaddr)
+		r.name = g.name
+		r.offset = r.fromaddr - g.addr
 	}
 	for _, r := range d.otherroots {
 		r.to = heap.find(r.toaddr)
@@ -320,9 +381,9 @@ func link(d *Dump) {
 	}
 }
 
-func Read(dumpname string) *Dump {
+func Read(dumpname, execname string) *Dump {
 	d := rawRead(dumpname)
-	link(d)
+	link(d, execname)
 	return d
 }
 
