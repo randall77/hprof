@@ -320,7 +320,7 @@ func link(d *Dump) {
 	}
 }
 
-func Read(dumpname) *Dump {
+func Read(dumpname string) *Dump {
 	d := rawRead(dumpname)
 	link(d)
 	return d
