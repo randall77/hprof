@@ -82,11 +82,12 @@ otherroot:
   rootptr uvarint     possible ptr to an object
 
 type:
-  7       uvarint
-  addr    uvarint     identifier for type (Type*)
-  size    uvarint     size of this type of object
-  name    string
-  nptrs   uvarint     number of pointers in an object of this type.
+  7         uvarint
+  addr      uvarint   identifier for type (Type*)
+  size      uvarint   size of this type of object
+  name      string
+  efaceptr  uvarint   1 = the data field of an Eface with this type is a ptr
+  nptrs     uvarint   number of pointers in an object of this type.
   ptroffset uvarint*  list of offsets of pointers.  Increasing order.
   TODO: field names, ...
 
@@ -111,3 +112,8 @@ finalizer data:
   11        uvarint
   obj       uvarint    object that has a finalizer
   addr      uvarint    data needed by that finalizer
+
+itab data:
+  12        uvarint
+  addr      uvarint    Itab*
+  ptr     uvarint      1 = the data field of an Iface with this itab is a ptr

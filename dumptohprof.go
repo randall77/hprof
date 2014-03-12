@@ -5,6 +5,7 @@ import (
 	"os"
 	"flag"
 	"log"
+	"encoding/binary"
 )
 
 // set of all the object pointers in the file
@@ -123,7 +124,7 @@ func addTag(tag byte, body []byte) {
 	hprof = append(hprof, tag)
 	hprof = append32(hprof, 0) // dummy delta time
 	if uint64(uint32(len(body))) != uint64(len(body)) {
-		panic("tag body too long")
+		log.Fatal("tag body too long")
 	}
 	hprof = append32(hprof, uint32(len(body)))
 	hprof = append(hprof, body...)
@@ -254,14 +255,14 @@ func fakeClassDump(id uint64, superid uint64) []byte {
 	return body
 }
 
-type Field struct {
+type JavaField struct {
 	kind byte
 	name string
 }
 
 // allocates a class, issues a load command for it,
 // returns the class dump sub-tag missing only # instance fields
-func addClass(id uint64, size uint64, name string, fields []Field) {
+func addClass(id uint64, size uint64, name string, fields []JavaField) {
 	// write load class command
 	var body []byte
 	sid := newSerial()
@@ -283,7 +284,7 @@ func addClass(id uint64, size uint64, name string, fields []Field) {
 	dump = appendId(dump, 0) // reserved
 	dump = appendId(dump, 0) // reserved
 	if uint64(uint32(size)) != size {
-		panic("object size too big")
+		log.Fatal("object size too big")
 	}
 	dump = append32(dump, uint32(size))
 	dump = append16(dump, 0) // constant pool size
@@ -302,7 +303,7 @@ func NoPtrClass(size uint64) uint64 {
 	c := noPtrClass[size]
 	if c == 0 {
 		c = newId()
-		addClass(c, size, fmt.Sprintf("noptr%d", size), []Field{})
+		addClass(c, size, fmt.Sprintf("noptr%d", size), []JavaField{})
 		noPtrClass[size] = c
 	}
 	return c
@@ -315,7 +316,7 @@ func StdClass(t *Type, size uint64) uint64 {
 	c := stdClass[t.addr]
 	if c == 0 {
 		c = newId()
-		f := make([]Field, size/8)
+		f := make([]JavaField, size/8)
 		for i := uint64(0); i < size/8; i++ {
 			f[i].kind = 11 // long
 			if i*8 < t.size {
@@ -324,8 +325,19 @@ func StdClass(t *Type, size uint64) uint64 {
 				f[i].name = "sizeclass_pad"
 			}
 		}
-		for _, offset := range t.ptrs {
-			f[offset/8].kind = 2 // Object
+		for _, fld := range t.fields {
+			switch fld.kind {
+			case fieldKindPtr:
+				f[fld.offset/8].kind = 2 // Object
+			// data fields might be pointers, might not be.  hprof has
+			// no good way to represent this.
+			case fieldKindIface:
+				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8+1].kind = 2 // Object
+			case fieldKindEface:
+				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8+1].kind = 2 // Object
+			}
 		}
 		addClass(c, size, t.name, f)
 		stdClass[t.addr] = c
@@ -346,22 +358,31 @@ func ArrayClass(t *Type, size uint64) uint64 {
 	c := arrayClass[k]
 	if c == 0 {
 		c = newId()
-		f := make([]Field, size/8)
+		f := make([]JavaField, size/8)
 		nelem := size / t.size
 		for i := uint64(0); i < size/8; i++ {
 			f[i].kind = 11 // long
-			if i*8 < t.size*nelem {
+			if i*8 < nelem*t.size {
 				f[i].name = fmt.Sprintf("f%03d_%03d", i*8/t.size, i*8%t.size)
 			} else {
 				f[i].name = "sizeclass_pad"
 			}
 		}
-		for i := uint64(0); i < nelem; i++ {
-			for _, offset := range t.ptrs {
-				f[(i*t.size+offset)/8].kind = 2 // Object
+		for i := uint64(0); i <= size - t.size; i += t.size {
+			for _, fld := range t.fields {
+				switch fld.kind {
+				case fieldKindPtr:
+					f[(i+fld.offset)/8].kind = 2 // Object
+				case fieldKindIface:
+					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8+1].kind = 2 // Object
+				case fieldKindEface:
+					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8+1].kind = 2 // Object
+				}
 			}
 		}
-		addClass(c, size, t.name+"{"+fmt.Sprintf("%d", nelem)+"}", f)
+		addClass(c, size, fmt.Sprintf("array{%d}%s", nelem, t.name), f)
 	}
 	return c
 }
@@ -379,7 +400,7 @@ func ChanClass(t *Type, size uint64) uint64 {
 	c := chanClass[k]
 	if c == 0 {
 		c = newId()
-		f := make([]Field, size/8)
+		f := make([]JavaField, size/8)
 		nelem := (size - d.hChanSize) / t.size
 		for i := uint64(0); i < size/8; i++ {
 			f[i].kind = 11 // long
@@ -391,12 +412,21 @@ func ChanClass(t *Type, size uint64) uint64 {
 				f[i].name = "sizeclass_pad"
 			}
 		}
-		for i := uint64(0); i < nelem; i++ {
-			for _, offset := range t.ptrs {
-				f[(d.hChanSize+i*t.size+offset)/8].kind = 2 // Object
+		for i := d.hChanSize; i <= size - t.size; i += t.size {
+			for _, fld := range t.fields {
+				switch fld.kind {
+				case fieldKindPtr:
+					f[(i+fld.offset)/8].kind = 2 // Object
+				case fieldKindIface:
+					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8+1].kind = 2 // Object
+				case fieldKindEface:
+					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8+1].kind = 2 // Object
+				}
 			}
 		}
-		addClass(c, size, t.name+"{"+fmt.Sprintf("%d", nelem)+"}", f)
+		addClass(c, size, fmt.Sprintf("chan{%d}%s", nelem, t.name), f)
 	}
 	return c
 }
@@ -429,14 +459,15 @@ func addHeapDump() {
 			c = NoPtrClass(uint64(len(x.data)))
 		} else {
 			switch x.kind {
-			case 0:
+			case typeKindObject:
 				c = StdClass(x.typ, uint64(len(x.data)))
-			case 1:
+			case typeKindArray:
 				c = ArrayClass(x.typ, uint64(len(x.data)))
-			case 2:
+			case typeKindChan:
+				fmt.Printf("dumping chan %x\n", x.addr)
 				c = ChanClass(x.typ, uint64(len(x.data)))
 			default:
-				panic("unhandled kind")
+				log.Fatal("unhandled kind")
 			}
 		}
 		dump = append(dump, 0x21) // instance dump
@@ -444,6 +475,13 @@ func addHeapDump() {
 		dump = append32(dump, stack_trace_serial_number)
 		dump = appendId(dump, c)
 		dump = append32(dump, uint32(len(x.data)))
+
+		// adjust ptr fields.  Any pointers outside the heap get zeroed,
+		// and any pointers to objects get adjusted to point to the object head.
+		for _, e := range x.edges {
+			writePtr(x.data[e.fromoffset:], e.to.addr)
+		}
+
 		endianSwap(x.data)
 		dump = append(dump, x.data...)
 		endianSwap(x.data)
@@ -504,5 +542,40 @@ func appendId(b []byte, x uint64) []byte {
 func endianSwap(b []byte) {
 	for ; len(b) >= 8; b = b[8:] {
 		b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7] = b[7], b[6], b[5], b[4], b[3], b[2], b[1], b[0]
+	}
+}
+
+func writePtr(b []byte, v uint64) {
+	switch {
+	case d.order == binary.LittleEndian && d.ptrSize == 4:
+		b[0] = byte(v >> 0)
+		b[1] = byte(v >> 8)
+		b[2] = byte(v >> 16)
+		b[3] = byte(v >> 24)
+	case d.order == binary.BigEndian && d.ptrSize == 4:
+		b[3] = byte(v >> 0)
+		b[2] = byte(v >> 8)
+		b[1] = byte(v >> 16)
+		b[0] = byte(v >> 24)
+	case d.order == binary.LittleEndian && d.ptrSize == 8:
+		b[0] = byte(v >> 0)
+		b[1] = byte(v >> 8)
+		b[2] = byte(v >> 16)
+		b[3] = byte(v >> 24)
+		b[4] = byte(v >> 32)
+		b[5] = byte(v >> 40)
+		b[6] = byte(v >> 48)
+		b[7] = byte(v >> 56)
+	case d.order == binary.BigEndian && d.ptrSize == 8:
+		b[7] = byte(v >> 0)
+		b[6] = byte(v >> 8)
+		b[5] = byte(v >> 16)
+		b[4] = byte(v >> 24)
+		b[3] = byte(v >> 32)
+		b[2] = byte(v >> 40)
+		b[1] = byte(v >> 48)
+		b[0] = byte(v >> 56)
+	default:
+		log.Fatal("unsupported order=%v ptrSize=%d", d.order, d.ptrSize)
 	}
 }

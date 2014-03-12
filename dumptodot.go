@@ -60,10 +60,12 @@ func main() {
 			name := x.typ.name
 			switch x.kind {
 			case 1:
-				name += "{" + fmt.Sprintf("%d", uint64(len(x.data))/x.typ.size) + "}"
+				name = fmt.Sprintf("array{%d}%s", uint64(len(x.data))/x.typ.size, name)
 			case 2:
-				name += "chan " + name
+				name = fmt.Sprintf("chan{%d}%s", (uint64(len(x.data))-d.hChanSize)/x.typ.size, name)
 			}
+			// NOTE: sizes are max sizes given sizeclass - the actual size of a
+			// chan or array might be smaller.
 			fmt.Printf("  v%x [label=\"%s\\n%d\"];\n", x.addr, name, len(x.data))
 		} else {
 			fmt.Printf("  v%x [label=\"%d\"];\n", x.addr, len(x.data))

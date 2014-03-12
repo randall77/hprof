@@ -5,17 +5,29 @@ import (
 	"debug/dwarf"
 	"debug/elf"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"log"
 	"os"
 	"sort"
 )
 
+type fieldKind int
+type typeKind int
+
+const (
+	fieldKindPtr   fieldKind = 0
+	fieldKindIface           = 1
+	fieldKindEface           = 2
+
+	typeKindObject typeKind = 0
+	typeKindArray           = 1
+	typeKindChan            = 2
+)
+
 type Dump struct {
 	order      binary.ByteOrder
 	ptrSize    uint64 // in bytes
-	hChanSize  uint64
+	hChanSize  uint64 // channel header size in bytes
 	types      []*Type
 	objects    []*Object
 	frames     []*Frame
@@ -24,21 +36,21 @@ type Dump struct {
 	dataroots  []*DataRoot
 	otherroots []*OtherRoot
 	finalizers []*Finalizer
+	itabs      []*Itab
 }
 
 // An edge is a directed connection between two objects.  The source
-// object is not explicitly specified.  It includes information about
-// where the edge leaves the source object and where it lands in the
-// destination obj.
+// object is implicit.  It includes information about where the edge
+// leaves the source object and where it lands in the destination obj.
 type Edge struct {
 	to         *Object // object pointed to
 	fromoffset uint64  // offset in source object where ptr was found
-	tooffset   uint64  // offset in destination object pointer points to
+	tooffset   uint64  // offset in destination object where ptr lands
 }
 
 type Object struct {
 	typ   *Type
-	kind  uint64
+	kind  typeKind
 	data  []byte // length is sizeclass size, may be bigger then typ.size
 	edges []Edge
 
@@ -55,7 +67,7 @@ type StackRoot struct {
 	frameaddr uint64
 }
 type DataRoot struct {
-	name string // name of data object
+	name string // name of global variable
 	e    Edge
 
 	fromaddr uint64
@@ -75,10 +87,25 @@ type Finalizer struct {
 	toaddr   uint64
 }
 
+// For the given itab value, is the corresponding
+// interface data field a pointer?
+type Itab struct {
+	addr uint64
+	ptr  bool
+}
+
+// A Field is a location in an object where there
+// might be a pointer.
+type Field struct {
+	kind   fieldKind
+	offset uint64
+}
+
 type Type struct {
-	name string // not necessarily unique
-	size uint64
-	ptrs []uint64 // offsets of pointer fields
+	name     string // not necessarily unique
+	size     uint64
+	efaceptr bool   // Efaces with this type have a data field which is a pointer
+	fields   []Field
 
 	addr uint64
 }
@@ -123,7 +150,7 @@ func readString(r io.ByteReader) string {
 	return string(readNBytes(r, n))
 }
 
-// reads data in
+// Reads heap dump into memory.
 func rawRead(filename string) *Dump {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -140,8 +167,6 @@ func rawRead(filename string) *Dump {
 		log.Fatal("not a go1.3 heap dump file")
 	}
 
-	types := make(map[uint64]struct{}, 0)
-
 	var d Dump
 	for {
 		kind := readUint64(r)
@@ -150,7 +175,7 @@ func rawRead(filename string) *Dump {
 			obj := &Object{}
 			obj.addr = readUint64(r)
 			obj.typaddr = readUint64(r)
-			obj.kind = readUint64(r)
+			obj.kind = typeKind(readUint64(r))
 			size := readUint64(r)
 			obj.data = readNBytes(r, size)
 			d.objects = append(d.objects, obj)
@@ -177,17 +202,14 @@ func rawRead(filename string) *Dump {
 			typ.addr = readUint64(r)
 			typ.size = readUint64(r)
 			typ.name = readString(r)
+			typ.efaceptr = readUint64(r) > 0
 			nptr := readUint64(r)
-			typ.ptrs = make([]uint64, nptr)
+			typ.fields = make([]Field, nptr)
 			for i := uint64(0); i < nptr; i++ {
-				typ.ptrs[i] = readUint64(r)
+				typ.fields[i].kind = fieldKind(readUint64(r))
+				typ.fields[i].offset = readUint64(r)
 			}
-			// We may get several records for a type.  Keep just
-			// one; they should all be identical.
-			if _, ok := types[typ.addr]; !ok {
-				types[typ.addr] = struct{}{}
-				d.types = append(d.types, typ)
-			}
+			d.types = append(d.types, typ)
 		case 8:
 			t := &Thread{}
 			t.addr = readUint64(r)
@@ -212,8 +234,13 @@ func rawRead(filename string) *Dump {
 			t.fromaddr = readUint64(r)
 			t.toaddr = readUint64(r)
 			d.finalizers = append(d.finalizers, t)
+		case 12:
+			t := &Itab{}
+			t.addr = readUint64(r)
+			t.ptr = readUint64(r) > 0
+			d.itabs = append(d.itabs, t)
 		default:
-			panic("bad kind " + fmt.Sprintf("%d", kind))
+			log.Fatal("unknown record kind %d", kind)
 		}
 	}
 }
@@ -243,11 +270,11 @@ func (g Globals) Len() int           { return len(g) }
 func (g Globals) Swap(i, j int)      { g[i], g[j] = g[j], g[i] }
 func (g Globals) Less(i, j int) bool { return g[i].addr < g[j].addr }
 
-// returns the global containing the given address
+// returns the global variable containing the given address.
 func (g Globals) find(p uint64) Global {
 	j := sort.Search(len(g), func(i int) bool { return p < g[i].addr })
 	if j == 0 {
-		return Global{"none", 0}
+		return Global{"unknown global", 0}
 	}
 	return g[j-1]
 }
@@ -256,18 +283,18 @@ func globalMap(d *Dump, execname string) Globals {
 	var g Globals
 	f, err := elf.Open(execname)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	//defer f.Close()
+	defer f.Close()
 	w, err := f.DWARF()
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	r := w.Reader()
 	for {
 		e, err := r.Next()
 		if err != nil {
-			panic(err)
+			log.Fatal(err)
 		}
 		if e == nil {
 			break
@@ -286,39 +313,113 @@ func globalMap(d *Dump, execname string) Globals {
 	return g
 }
 
+func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
+	for _, f := range fields {
+		off := offset + f.offset
+		s := x.data[off:]
+		switch f.kind {
+		case fieldKindPtr:
+			p := readPtr(info.dump, s)
+			q := info.heap.find(p)
+			if q != nil {
+				x.edges = append(x.edges, Edge{q, off, p - q.addr})
+			}
+		case fieldKindEface:
+			tp := readPtr(info.dump, s)
+			if tp != 0 {
+				t := info.types[tp]
+				if t == nil {
+					log.Fatal("can't find eface type")
+				}
+				if t.efaceptr {
+					p := readPtr(info.dump, s[info.dump.ptrSize:])
+					q := info.heap.find(p)
+					if q != nil {
+						x.edges = append(x.edges, Edge{q, off, p - q.addr})
+					}
+				}
+			}
+		case fieldKindIface:
+			tp := readPtr(info.dump, s)
+			if tp != 0 {
+				t := info.itabs[tp]
+				if t == nil {
+					log.Fatal("can't find iface tab")
+				}
+				if t.ptr {
+					p := readPtr(info.dump, s[info.dump.ptrSize:])
+					q := info.heap.find(p)
+					if q != nil {
+						x.edges = append(x.edges, Edge{q, off, p - q.addr})
+					}
+				}
+			}
+		}
+	}
+}
+
+// various maps used to link up data structures
+type LinkInfo struct {
+	dump    *Dump
+	types   map[uint64]*Type
+	itabs   map[uint64]*Itab
+	frames  map[uint64]*Frame
+	globals Globals
+	heap    Heap
+}
+
 func link(d *Dump, execname string) {
-	globals := globalMap(d, execname)
-	types := make(map[uint64]*Type, len(d.types))
-	frames := make(map[uint64]*Frame, len(d.frames))
+	// initialize some maps used for linking
+	var info LinkInfo
+	info.dump = d
+	info.types = make(map[uint64]*Type, len(d.types))
+	info.itabs = make(map[uint64]*Itab, len(d.itabs))
+	info.frames = make(map[uint64]*Frame, len(d.frames))
 	for _, x := range d.types {
-		types[x.addr] = x
+		// Note: there may be duplicate type records in a dump.
+		// The duplicates get thrown away here.
+		info.types[x.addr] = x
+	}
+	for _, x := range d.itabs {
+		info.itabs[x.addr] = x
 	}
 	for _, x := range d.frames {
-		frames[x.addr] = x
+		info.frames[x.addr] = x
 	}
+
+	// Binary-searchable map of global variables
+	info.globals = globalMap(d, execname)
+
+	// Binary-searchable map of objects
+	for _, x := range d.objects {
+		info.heap = append(info.heap, x)
+	}
+	sort.Sort(info.heap)
 
 	// link objects to types
 	for _, x := range d.objects {
 		if x.typaddr == 0 {
 			x.typ = nil
 		} else {
-			x.typ = types[x.typaddr]
+			x.typ = info.types[x.typaddr]
 			if x.typ == nil {
-				panic("type is missing")
+				log.Fatal("type is missing")
 			}
 		}
 	}
+
 	// link up frames in sequence
 	for _, f := range d.frames {
-		f.parent = frames[f.parentaddr]
+		f.parent = info.frames[f.parentaddr]
 		// NOTE: the base frame of the stack (runtime.goexit usually)
 		// will fail the lookup here and set a nil pointer.
 	}
+
 	// link threads to frames & vice versa
 	for _, t := range d.threads {
-		t.tos = frames[t.tosaddr]
+		t.tos = info.frames[t.tosaddr]
 		if t.tos == nil {
-			panic("tos missing")
+			log.Fatal("tos missing")
 		}
 		d := uint64(0)
 		for f := t.tos; f != nil; f = f.parent {
@@ -328,33 +429,24 @@ func link(d *Dump, execname string) {
 		}
 	}
 
-	// Accumulate ranges for each object into a "heap" for quick lookup.
-	// We need this heap so we can pinpoint the destination of pointers
-	// that point to the middle of an object.
-	var heap Heap
-	for _, x := range d.objects {
-		heap = append(heap, x)
-	}
-	sort.Sort(heap)
-
 	// link up roots to objects
 	for _, r := range d.stackroots {
-		r.frame = frames[r.frameaddr]
-		x := heap.find(r.toaddr)
+		r.frame = info.frames[r.frameaddr]
+		x := info.heap.find(r.toaddr)
 		if x != nil {
 			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr}
 		}
 	}
 	for _, r := range d.dataroots {
-		g := globals.find(r.fromaddr)
+		g := info.globals.find(r.fromaddr)
 		r.name = g.name
-		q := heap.find(r.toaddr)
+		q := info.heap.find(r.toaddr)
 		if q != nil {
 			r.e = Edge{q, r.fromaddr - g.addr, r.toaddr - q.addr}
 		}
 	}
 	for _, r := range d.otherroots {
-		x := heap.find(r.toaddr)
+		x := info.heap.find(r.toaddr)
 		if x != nil {
 			r.e = Edge{x, 0, r.toaddr - x.addr}
 		}
@@ -367,59 +459,26 @@ func link(d *Dump, execname string) {
 			continue // typeless objects have no pointers
 		}
 		switch x.kind {
-		case 0:
-			// simple object
-			for _, offset := range t.ptrs {
-				s := x.data[offset:]
-				p := readPtr(d, s)
-				q := heap.find(p)
-				if q == nil {
-					writePtr(d, s, 0)
-				} else {
-					writePtr(d, s, q.addr)
-					x.edges = append(x.edges, Edge{q, offset, p - q.addr})
-				}
+		case typeKindObject:
+			linkFields(&info, x, t.fields, 0)
+		case typeKindArray:
+			for i := uint64(0); i <= uint64(len(x.data)) - t.size; i += t.size {
+				linkFields(&info, x, t.fields, i)
 			}
-		case 1:
-			// array object
-			for i := uint64(0); i < uint64(len(x.data))/t.size; i++ {
-				for _, offset := range t.ptrs {
-					s := x.data[i*t.size+offset:]
-					p := readPtr(d, s)
-					q := heap.find(p)
-					if q == nil {
-						writePtr(d, s, 0)
-					} else {
-						writePtr(d, s, q.addr)
-						x.edges = append(x.edges, Edge{q, i*t.size + offset, p - q.addr})
-					}
-				}
-			}
-		case 2:
-			// channel object.
-			for i := uint64(0); i < (uint64(len(x.data))-d.hChanSize)/t.size; i++ {
-				for _, offset := range t.ptrs {
-					s := x.data[d.hChanSize+i*t.size+offset:]
-					p := readPtr(d, s)
-					q := heap.find(p)
-					if q == nil {
-						writePtr(d, s, 0)
-					} else {
-						writePtr(d, s, q.addr)
-						x.edges = append(x.edges, Edge{q, d.hChanSize + i*t.size + offset, p - q.addr})
-					}
-				}
+		case typeKindChan:
+			for i := d.hChanSize; i <= uint64(len(x.data)) - t.size; i += t.size {
+				linkFields(&info, x, t.fields, i)
 			}
 		}
 	}
 
 	// Add links for finalizers
 	for _, f := range d.finalizers {
-		x := heap.find(f.fromaddr)
-		y := heap.find(f.toaddr)
+		x := info.heap.find(f.fromaddr)
+		y := info.heap.find(f.toaddr)
 		if x != nil && y != nil {
 			x.edges = append(x.edges, Edge{x, 0, f.toaddr - y.addr})
-			// TODO: mark edge as finalizer-dependent somehow?
+			// TODO: mark edge as arising from a finalizer somehow?
 		}
 	}
 }
@@ -441,40 +500,7 @@ func readPtr(d *Dump, b []byte) uint64 {
 	case d.order == binary.BigEndian && d.ptrSize == 8:
 		return uint64(b[7]) + uint64(b[6])<<8 + uint64(b[5])<<16 + uint64(b[4])<<24 + uint64(b[3])<<32 + uint64(b[2])<<40 + uint64(b[1])<<48 + uint64(b[0])<<56
 	default:
-		panic(fmt.Sprintf("unsupported order=%v ptrSize=%d", d.order, d.ptrSize))
-	}
-}
-func writePtr(d *Dump, b []byte, v uint64) {
-	switch {
-	case d.order == binary.LittleEndian && d.ptrSize == 4:
-		b[0] = byte(v >> 0)
-		b[1] = byte(v >> 8)
-		b[2] = byte(v >> 16)
-		b[3] = byte(v >> 24)
-	case d.order == binary.BigEndian && d.ptrSize == 4:
-		b[3] = byte(v >> 0)
-		b[2] = byte(v >> 8)
-		b[1] = byte(v >> 16)
-		b[0] = byte(v >> 24)
-	case d.order == binary.LittleEndian && d.ptrSize == 8:
-		b[0] = byte(v >> 0)
-		b[1] = byte(v >> 8)
-		b[2] = byte(v >> 16)
-		b[3] = byte(v >> 24)
-		b[4] = byte(v >> 32)
-		b[5] = byte(v >> 40)
-		b[6] = byte(v >> 48)
-		b[7] = byte(v >> 56)
-	case d.order == binary.BigEndian && d.ptrSize == 8:
-		b[7] = byte(v >> 0)
-		b[6] = byte(v >> 8)
-		b[5] = byte(v >> 16)
-		b[4] = byte(v >> 24)
-		b[3] = byte(v >> 32)
-		b[2] = byte(v >> 40)
-		b[1] = byte(v >> 48)
-		b[0] = byte(v >> 56)
-	default:
-		panic(fmt.Sprintf("unsupported order=%v ptrSize=%d", d.order, d.ptrSize))
+		log.Fatal("unsupported order=%v ptrSize=%d", d.order, d.ptrSize)
+		return 0
 	}
 }
