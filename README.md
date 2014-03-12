@@ -11,8 +11,8 @@ file descriptor from within your Go program (that's runtime/debug).
 The code in this directory is for a hprof utility which converts
 from the internal dump format to the hprof format.
 
-go build
-hprof dumpfile dump.hprof
+go build dumptohprof.go readdump.go
+dumptohprof dumpfile dump.hprof
 jhat dump.hprof  (might need to download jhat)
 
 then navigate a browser to localhost:7000 and poke around.  A good example is "show heap histogram".
@@ -49,6 +49,8 @@ are the possible kinds:
    8: stack frame
    9: stack
   10: dump params
+  11: finalizer
+  12: itab
 
 Strings are encoded with a Uvarint size followed by that many bytes of string (UTF8 encoded)
 
@@ -116,4 +118,4 @@ finalizer data:
 itab data:
   12        uvarint
   addr      uvarint    Itab*
-  ptr     uvarint      1 = the data field of an Iface with this itab is a ptr
+  ptr       uvarint    1 = the data field of an Iface with this itab is a ptr
