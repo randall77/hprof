@@ -82,16 +82,16 @@ func main() {
 		}
 	}
 
-	// threads and stacks
+	// goroutines and stacks
 	for _, f := range d.frames {
 		fmt.Printf("  v%x [label=\"%s\\n%d\" shape=rectangle];\n", f.addr, f.name, f.parentaddr-f.addr)
 		if f.parent != nil {
 			fmt.Printf("  v%x -> v%x;\n", f.addr, f.parent.addr)
 		}
 	}
-	for _, t := range d.threads {
-		fmt.Printf("  \"threads\" [shape=diamond];\n")
-		fmt.Printf("  \"threads\" -> v%x;\n", t.tos.addr)
+	for _, t := range d.goroutines {
+		fmt.Printf("  \"goroutines\" [shape=diamond];\n")
+		fmt.Printf("  \"goroutines\" -> v%x;\n", t.tos.addr)
 	}
 
 	// roots

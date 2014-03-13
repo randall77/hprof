@@ -16,22 +16,38 @@ type typeKind int
 
 const (
 	fieldKindPtr   fieldKind = 0
-	fieldKindIface           = 1
-	fieldKindEface           = 2
+	fieldKindString          = 1
+	fieldKindSlice           = 2
+	fieldKindIface           = 3
+	fieldKindEface           = 4
 
 	typeKindObject typeKind = 0
 	typeKindArray           = 1
 	typeKindChan            = 2
+
+	tagObject = 1
+	tagEOF = 3
+	tagStackRoot = 4
+	tagDataRoot = 5
+	tagOtherRoot = 6
+	tagType = 7
+	tagGoRoutine = 8
+	tagStackFrame = 9
+	tagParams = 10
+	tagFinalizer = 11
+	tagItab = 12
 )
 
 type Dump struct {
 	order      binary.ByteOrder
 	ptrSize    uint64 // in bytes
 	hChanSize  uint64 // channel header size in bytes
+	heapStart  uint64
+	heapEnd    uint64
 	types      []*Type
 	objects    []*Object
 	frames     []*Frame
-	threads    []*Thread
+	goroutines []*GoRoutine
 	stackroots []*StackRoot
 	dataroots  []*DataRoot
 	otherroots []*OtherRoot
@@ -80,11 +96,13 @@ type OtherRoot struct {
 	toaddr uint64
 }
 
-// Object fromaddr has a finalizer that requires
-// data from toaddr.
+// Object obj has a finalizer.
 type Finalizer struct {
-	fromaddr uint64
-	toaddr   uint64
+	obj uint64
+	fn uint64   // function to be run (a FuncVal*)
+	code uint64 // code ptr (fn->fn)
+	fint uint64 // type of function argument
+	ot uint64   // type of object
 }
 
 // For the given itab value, is the corresponding
@@ -110,21 +128,30 @@ type Type struct {
 	addr uint64
 }
 
-type Thread struct {
-	tos *Frame // frame at the top of the stack
+type GoRoutine struct {
+	tos *Frame // frame at the top of the stack (i.e. currently running)
 
 	addr    uint64
 	tosaddr uint64
+	goid    uint64
+	gopc    uint64
+	status  uint64
+        issystem bool
+	isbackground bool
+	waitsince uint64
+	waitreason string
 }
 
 type Frame struct {
 	name   string
 	parent *Frame
-	thread *Thread
+	goroutine *GoRoutine
 	depth  uint64
 
 	addr       uint64
 	parentaddr uint64
+	entry      uint64
+	pc         uint64
 }
 
 func readUint64(r io.ByteReader) uint64 {
@@ -149,6 +176,13 @@ func readString(r io.ByteReader) string {
 	n := readUint64(r)
 	return string(readNBytes(r, n))
 }
+func readBool(r io.ByteReader) bool {
+	b, err := r.ReadByte()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return b != 0
+}
 
 // Reads heap dump into memory.
 func rawRead(filename string) *Dump {
@@ -171,7 +205,7 @@ func rawRead(filename string) *Dump {
 	for {
 		kind := readUint64(r)
 		switch kind {
-		case 1:
+		case tagObject:
 			obj := &Object{}
 			obj.addr = readUint64(r)
 			obj.typaddr = readUint64(r)
@@ -179,30 +213,30 @@ func rawRead(filename string) *Dump {
 			size := readUint64(r)
 			obj.data = readNBytes(r, size)
 			d.objects = append(d.objects, obj)
-		case 3:
+		case tagEOF:
 			return &d
-		case 4:
+		case tagStackRoot:
 			t := &StackRoot{}
 			t.fromaddr = readUint64(r)
 			t.toaddr = readUint64(r)
 			t.frameaddr = readUint64(r)
 			d.stackroots = append(d.stackroots, t)
-		case 5:
+		case tagDataRoot:
 			t := &DataRoot{}
 			t.fromaddr = readUint64(r)
 			t.toaddr = readUint64(r)
 			d.dataroots = append(d.dataroots, t)
-		case 6:
+		case tagOtherRoot:
 			t := &OtherRoot{}
 			t.description = readString(r)
 			t.toaddr = readUint64(r)
 			d.otherroots = append(d.otherroots, t)
-		case 7:
+		case tagType:
 			typ := &Type{}
 			typ.addr = readUint64(r)
 			typ.size = readUint64(r)
 			typ.name = readString(r)
-			typ.efaceptr = readUint64(r) > 0
+			typ.efaceptr = readBool(r)
 			nptr := readUint64(r)
 			typ.fields = make([]Field, nptr)
 			for i := uint64(0); i < nptr; i++ {
@@ -210,18 +244,27 @@ func rawRead(filename string) *Dump {
 				typ.fields[i].offset = readUint64(r)
 			}
 			d.types = append(d.types, typ)
-		case 8:
-			t := &Thread{}
+		case tagGoRoutine:
+			t := &GoRoutine{}
 			t.addr = readUint64(r)
 			t.tosaddr = readUint64(r)
-			d.threads = append(d.threads, t)
-		case 9:
+			t.goid = readUint64(r)
+			t.gopc = readUint64(r)
+			t.status = readUint64(r)
+			t.issystem = readBool(r)
+			t.isbackground = readBool(r)
+			t.waitsince = readUint64(r)
+			t.waitreason = readString(r)
+			d.goroutines = append(d.goroutines, t)
+		case tagStackFrame:
 			t := &Frame{}
 			t.addr = readUint64(r)
 			t.parentaddr = readUint64(r)
+			t.entry = readUint64(r)
+			t.pc = readUint64(r)
 			t.name = readString(r)
 			d.frames = append(d.frames, t)
-		case 10:
+		case tagParams:
 			if readUint64(r) == 0 {
 				d.order = binary.LittleEndian
 			} else {
@@ -229,15 +272,20 @@ func rawRead(filename string) *Dump {
 			}
 			d.ptrSize = readUint64(r)
 			d.hChanSize = readUint64(r)
-		case 11:
+			d.heapStart = readUint64(r)
+			d.heapEnd = readUint64(r)
+		case tagFinalizer:
 			t := &Finalizer{}
-			t.fromaddr = readUint64(r)
-			t.toaddr = readUint64(r)
+			t.obj = readUint64(r)
+			t.fn = readUint64(r)
+			t.code = readUint64(r)
+			t.fint = readUint64(r)
+			t.ot = readUint64(r)
 			d.finalizers = append(d.finalizers, t)
-		case 12:
+		case tagItab:
 			t := &Itab{}
 			t.addr = readUint64(r)
-			t.ptr = readUint64(r) > 0
+			t.ptr = readBool(r)
 			d.itabs = append(d.itabs, t)
 		default:
 			log.Fatal("unknown record kind %d", kind)
@@ -313,45 +361,44 @@ func globalMap(d *Dump, execname string) Globals {
 	return g
 }
 
+func linkPtr(info *LinkInfo, x *Object, off uint64) {
+	p := readPtr(info.dump, x.data[off:])
+	q := info.heap.find(p)
+	if q != nil {
+		x.edges = append(x.edges, Edge{q, off, p - q.addr})
+	}
+}
 func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
 	for _, f := range fields {
 		off := offset + f.offset
-		s := x.data[off:]
 		switch f.kind {
 		case fieldKindPtr:
-			p := readPtr(info.dump, s)
-			q := info.heap.find(p)
-			if q != nil {
-				x.edges = append(x.edges, Edge{q, off, p - q.addr})
-			}
+			linkPtr(info, x, off)
+		case fieldKindString:
+			linkPtr(info, x, off)
+		case fieldKindSlice:
+			linkPtr(info, x, off)
 		case fieldKindEface:
-			tp := readPtr(info.dump, s)
+			linkPtr(info, x, off)
+			tp := readPtr(info.dump, x.data[off:])
 			if tp != 0 {
 				t := info.types[tp]
 				if t == nil {
 					log.Fatal("can't find eface type")
 				}
 				if t.efaceptr {
-					p := readPtr(info.dump, s[info.dump.ptrSize:])
-					q := info.heap.find(p)
-					if q != nil {
-						x.edges = append(x.edges, Edge{q, off, p - q.addr})
-					}
+					linkPtr(info, x, off + info.dump.ptrSize)
 				}
 			}
 		case fieldKindIface:
-			tp := readPtr(info.dump, s)
+			tp := readPtr(info.dump, x.data[off:])
 			if tp != 0 {
 				t := info.itabs[tp]
 				if t == nil {
 					log.Fatal("can't find iface tab")
 				}
 				if t.ptr {
-					p := readPtr(info.dump, s[info.dump.ptrSize:])
-					q := info.heap.find(p)
-					if q != nil {
-						x.edges = append(x.edges, Edge{q, off, p - q.addr})
-					}
+					linkPtr(info, x, off + info.dump.ptrSize)
 				}
 			}
 		}
@@ -415,15 +462,15 @@ func link(d *Dump, execname string) {
 		// will fail the lookup here and set a nil pointer.
 	}
 
-	// link threads to frames & vice versa
-	for _, t := range d.threads {
+	// link goroutines to frames & vice versa
+	for _, t := range d.goroutines {
 		t.tos = info.frames[t.tosaddr]
 		if t.tos == nil {
 			log.Fatal("tos missing")
 		}
 		d := uint64(0)
 		for f := t.tos; f != nil; f = f.parent {
-			f.thread = t
+			f.goroutine = t
 			f.depth = d
 			d++
 		}
@@ -474,11 +521,13 @@ func link(d *Dump, execname string) {
 
 	// Add links for finalizers
 	for _, f := range d.finalizers {
-		x := info.heap.find(f.fromaddr)
-		y := info.heap.find(f.toaddr)
-		if x != nil && y != nil {
-			x.edges = append(x.edges, Edge{x, 0, f.toaddr - y.addr})
-			// TODO: mark edge as arising from a finalizer somehow?
+		x := info.heap.find(f.obj)
+		for _, addr := range []uint64{f.fn, f.fint, f.ot} {
+			y := info.heap.find(addr)
+			if x != nil && y != nil {
+				x.edges = append(x.edges, Edge{x, 0, addr - y.addr})
+				// TODO: mark edge as arising from a finalizer somehow?
+			}
 		}
 	}
 }

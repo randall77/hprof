@@ -89,19 +89,29 @@ type:
   size      uvarint   size of this type of object
   name      string
   efaceptr  uvarint   1 = the data field of an Eface with this type is a ptr
-  nptrs     uvarint   number of pointers in an object of this type.
-  ptroffset uvarint*  list of offsets of pointers.  Increasing order.
+  nfields   uvarint   number of fields in an object of this type.
+  fields    [2]uvarint*  list of <kind,offset> of fields.  Increasing offset order.
+                      kinds: 0:Ptr 1:String 2:Slice 3:Iface 4:Eface
   TODO: field names, ...
 
-thread:
+goroutine:
   8       uvarint
   addr    uvarint     thread identifier
-  tos     uvarint     top frame of stack
+  tos     uvarint     top (the currently running) frame of stack
+  goid    uvarint     ID of goroutine
+  gopc    uvarint     pc of creation point
+  status  uvarint     idle=0, runnable=1, syscall=3, waiting=4
+  issystem uvarint
+  isbackground uvarint
+  waitsince uvarint   
+  waitreason string
 
 stack frame:
   9       uvarint
   addr    uvarint     sp of frame
   parent  uvarint     sp of parent's frame, or nil if bottom of stack
+  entry   uvarint     pc of function entry
+  pc      uvarint     pc code is suspended at
   name    string      function name
 
 dump params:
@@ -109,11 +119,16 @@ dump params:
   endian    uvarint     0=little endian, 1=big endian
   ptrsize   uvarint     ptr size in bytes.  4 or 8
   hchansize uvarint     size of channel header in bytes.
+  heapstart uvarint     start of heap
+  heapend   uvarint     end of heap
 
 finalizer data:
   11        uvarint
   obj       uvarint    object that has a finalizer
-  addr      uvarint    data needed by that finalizer
+  funcval   uvarint    funcval ptr
+  code      uvarint    code ptr (funcval->fn)
+  fint      uvarint    interface argument type of finalizer function
+  ot        uvarint    object type
 
 itab data:
   12        uvarint
