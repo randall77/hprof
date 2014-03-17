@@ -38,6 +38,14 @@ func main() {
 			}
 		}
 	}
+	for _, g := range d.goroutines {
+		if g.ctxt != nil {
+			if _, ok := reachable[g.ctxt]; !ok {
+				reachable[g.ctxt] = struct{}{}
+				q = append(q, g.ctxt)
+			}
+		}
+	}
 	for len(q) > 0 {
 		x := q[0]
 		q = q[1:]
@@ -54,7 +62,7 @@ func main() {
 	// print object graph
 	for _, x := range d.objects {
 		if _, ok := reachable[x]; !ok {
-			continue
+			fmt.Printf("  v%x [style=filled fillcolor=gray];\n", x.addr)
 		}
 		if x.typ != nil {
 			name := x.typ.name

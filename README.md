@@ -5,7 +5,7 @@ Heap profile reader for Go
 
 Runtime patch: https://codereview.appspot.com/37540043/
 
-You call debug.DumpHeap(fd uintptr) to write a heap dump to the given
+You call debug.WriteHeapDump(fd uintptr) to write a heap dump to the given
 file descriptor from within your Go program (that's runtime/debug).
 
 The code in this directory is for a hprof utility which converts

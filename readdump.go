@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"runtime"
 )
 
 type fieldKind int
@@ -36,6 +37,8 @@ const (
 	tagParams = 10
 	tagFinalizer = 11
 	tagItab = 12
+	tagOSThread = 13
+	tagMemStats = 14
 )
 
 type Dump struct {
@@ -44,15 +47,20 @@ type Dump struct {
 	hChanSize  uint64 // channel header size in bytes
 	heapStart  uint64
 	heapEnd    uint64
+	thechar    byte
+	experiment string
+	ncpu       uint64
 	types      []*Type
 	objects    []*Object
-	frames     []*Frame
+	frames     []*StackFrame
 	goroutines []*GoRoutine
 	stackroots []*StackRoot
 	dataroots  []*DataRoot
 	otherroots []*OtherRoot
 	finalizers []*Finalizer
 	itabs      []*Itab
+	osthreads  []*OSThread
+	memstats   *runtime.MemStats
 }
 
 // An edge is a directed connection between two objects.  The source
@@ -75,12 +83,13 @@ type Object struct {
 }
 
 type StackRoot struct {
-	frame *Frame
+	frame *StackFrame
 	e     Edge
 
 	fromaddr  uint64
 	toaddr    uint64
 	frameaddr uint64
+	depth     uint64
 }
 type DataRoot struct {
 	name string // name of global variable
@@ -112,6 +121,12 @@ type Itab struct {
 	ptr  bool
 }
 
+type OSThread struct {
+	addr uint64
+	id   uint64
+        procid uint64
+}
+
 // A Field is a location in an object where there
 // might be a pointer.
 type Field struct {
@@ -129,7 +144,8 @@ type Type struct {
 }
 
 type GoRoutine struct {
-	tos *Frame // frame at the top of the stack (i.e. currently running)
+	tos *StackFrame // frame at the top of the stack (i.e. currently running)
+	ctxt *Object
 
 	addr    uint64
 	tosaddr uint64
@@ -140,11 +156,13 @@ type GoRoutine struct {
 	isbackground bool
 	waitsince uint64
 	waitreason string
+	ctxtaddr  uint64
+	maddr  uint64
 }
 
-type Frame struct {
+type StackFrame struct {
 	name   string
-	parent *Frame
+	parent *StackFrame
 	goroutine *GoRoutine
 	depth  uint64
 
@@ -220,6 +238,7 @@ func rawRead(filename string) *Dump {
 			t.fromaddr = readUint64(r)
 			t.toaddr = readUint64(r)
 			t.frameaddr = readUint64(r)
+			t.depth = readUint64(r)
 			d.stackroots = append(d.stackroots, t)
 		case tagDataRoot:
 			t := &DataRoot{}
@@ -245,24 +264,28 @@ func rawRead(filename string) *Dump {
 			}
 			d.types = append(d.types, typ)
 		case tagGoRoutine:
-			t := &GoRoutine{}
-			t.addr = readUint64(r)
-			t.tosaddr = readUint64(r)
-			t.goid = readUint64(r)
-			t.gopc = readUint64(r)
-			t.status = readUint64(r)
-			t.issystem = readBool(r)
-			t.isbackground = readBool(r)
-			t.waitsince = readUint64(r)
-			t.waitreason = readString(r)
-			d.goroutines = append(d.goroutines, t)
+			g := &GoRoutine{}
+			g.addr = readUint64(r)
+			g.tosaddr = readUint64(r)
+			g.goid = readUint64(r)
+			g.gopc = readUint64(r)
+			g.status = readUint64(r)
+			g.issystem = readBool(r)
+			g.isbackground = readBool(r)
+			g.waitsince = readUint64(r)
+			g.waitreason = readString(r)
+			g.ctxtaddr = readUint64(r)
+			g.maddr = readUint64(r)
+			d.goroutines = append(d.goroutines, g)
 		case tagStackFrame:
-			t := &Frame{}
+			t := &StackFrame{}
 			t.addr = readUint64(r)
+			t.depth = readUint64(r)
 			t.parentaddr = readUint64(r)
 			t.entry = readUint64(r)
 			t.pc = readUint64(r)
 			t.name = readString(r)
+			readString(r) // raw frame data
 			d.frames = append(d.frames, t)
 		case tagParams:
 			if readUint64(r) == 0 {
@@ -274,6 +297,9 @@ func rawRead(filename string) *Dump {
 			d.hChanSize = readUint64(r)
 			d.heapStart = readUint64(r)
 			d.heapEnd = readUint64(r)
+			d.thechar = byte(readUint64(r))
+			d.experiment = readString(r)
+			d.ncpu = readUint64(r)
 		case tagFinalizer:
 			t := &Finalizer{}
 			t.obj = readUint64(r)
@@ -287,6 +313,41 @@ func rawRead(filename string) *Dump {
 			t.addr = readUint64(r)
 			t.ptr = readBool(r)
 			d.itabs = append(d.itabs, t)
+		case tagOSThread:
+			t := &OSThread{}
+			t.addr = readUint64(r)
+			t.id = readUint64(r)
+			t.procid = readUint64(r)
+		case tagMemStats:
+			t := &runtime.MemStats{}
+			t.Alloc = readUint64(r)
+			t.TotalAlloc = readUint64(r)
+			t.Sys = readUint64(r)
+			t.Lookups = readUint64(r)
+			t.Mallocs = readUint64(r)
+			t.Frees = readUint64(r)
+			t.HeapAlloc = readUint64(r)
+			t.HeapSys = readUint64(r)
+			t.HeapIdle = readUint64(r)
+			t.HeapInuse = readUint64(r)
+			t.HeapReleased = readUint64(r)
+			t.HeapObjects = readUint64(r)
+			t.StackInuse = readUint64(r)
+			t.StackSys = readUint64(r)
+			t.MSpanInuse = readUint64(r)
+			t.MSpanSys = readUint64(r)
+			t.MCacheInuse = readUint64(r)
+			t.MCacheSys = readUint64(r)
+			t.BuckHashSys = readUint64(r)
+			t.GCSys = readUint64(r)
+			t.OtherSys = readUint64(r)
+			t.NextGC = readUint64(r)
+			t.LastGC = readUint64(r)
+			t.PauseTotalNs = readUint64(r)
+			for i := 0; i < 256; i++ {
+				t.PauseNs[i] = readUint64(r)
+			}
+			t.NumGC = uint32(readUint64(r))
 		default:
 			log.Fatal("unknown record kind %d", kind)
 		}
@@ -410,9 +471,14 @@ type LinkInfo struct {
 	dump    *Dump
 	types   map[uint64]*Type
 	itabs   map[uint64]*Itab
-	frames  map[uint64]*Frame
+	frames  map[frameId]*StackFrame
 	globals Globals
 	heap    Heap
+}
+
+type frameId struct {
+	sp    uint64
+	depth uint64
 }
 
 func link(d *Dump, execname string) {
@@ -421,7 +487,7 @@ func link(d *Dump, execname string) {
 	info.dump = d
 	info.types = make(map[uint64]*Type, len(d.types))
 	info.itabs = make(map[uint64]*Itab, len(d.itabs))
-	info.frames = make(map[uint64]*Frame, len(d.frames))
+	info.frames = make(map[frameId]*StackFrame, len(d.frames))
 	for _, x := range d.types {
 		// Note: there may be duplicate type records in a dump.
 		// The duplicates get thrown away here.
@@ -431,7 +497,7 @@ func link(d *Dump, execname string) {
 		info.itabs[x.addr] = x
 	}
 	for _, x := range d.frames {
-		info.frames[x.addr] = x
+		info.frames[frameId{x.addr,x.depth}] = x
 	}
 
 	// Binary-searchable map of global variables
@@ -457,28 +523,29 @@ func link(d *Dump, execname string) {
 
 	// link up frames in sequence
 	for _, f := range d.frames {
-		f.parent = info.frames[f.parentaddr]
+		f.parent = info.frames[frameId{f.parentaddr,f.depth+1}]
 		// NOTE: the base frame of the stack (runtime.goexit usually)
 		// will fail the lookup here and set a nil pointer.
 	}
 
 	// link goroutines to frames & vice versa
-	for _, t := range d.goroutines {
-		t.tos = info.frames[t.tosaddr]
-		if t.tos == nil {
+	for _, g := range d.goroutines {
+		g.tos = info.frames[frameId{g.tosaddr,0}]
+		if g.tos == nil {
 			log.Fatal("tos missing")
 		}
-		d := uint64(0)
-		for f := t.tos; f != nil; f = f.parent {
-			f.goroutine = t
-			f.depth = d
-			d++
+		for f := g.tos; f != nil; f = f.parent {
+			f.goroutine = g
+		}
+		x := info.heap.find(g.ctxtaddr)
+		if x != nil {
+			g.ctxt = x
 		}
 	}
 
 	// link up roots to objects
 	for _, r := range d.stackroots {
-		r.frame = info.frames[r.frameaddr]
+		r.frame = info.frames[frameId{r.frameaddr,r.depth}]
 		x := info.heap.find(r.toaddr)
 		if x != nil {
 			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr}
