@@ -107,7 +107,13 @@ func main() {
 		e := r.e
 		if e.to != nil {
 			var taillabel, headlabel string
-			if e.fromoffset != 0 {
+			if r.name != "" {
+				if r.offset == 0 {
+					taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", r.name)
+				} else {
+					taillabel = fmt.Sprintf(" [taillabel=\"%s:%d\"]", r.name, r.offset)
+				}
+			} else if e.fromoffset != 0 {
 				taillabel = fmt.Sprintf(" [taillabel=\"%d\"]", e.fromoffset)
 			}
 			if e.tooffset != 0 {

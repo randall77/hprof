@@ -40,6 +40,12 @@ const (
 	tagItab       = 12
 	tagOSThread   = 13
 	tagMemStats   = 14
+
+	// DWARF constants
+	dw_op_call_frame_cfa = 156
+	dw_op_consts         = 17
+	dw_op_plus           = 34
+	dw_op_addr           = 3
 )
 
 type Dump struct {
@@ -86,6 +92,8 @@ type Object struct {
 type StackRoot struct {
 	frame *StackFrame
 	e     Edge
+	name  string    // name of a local variable
+	offset uint64   // offset within local variable (e.fromoffset is offset within stack frame)
 
 	fromaddr  uint64
 	toaddr    uint64
@@ -322,6 +330,7 @@ func rawRead(filename string) *Dump {
 			t.addr = readUint64(r)
 			t.id = readUint64(r)
 			t.procid = readUint64(r)
+			d.osthreads = append(d.osthreads, t)
 		case tagMemStats:
 			t := &runtime.MemStats{}
 			t.Alloc = readUint64(r)
@@ -352,6 +361,7 @@ func rawRead(filename string) *Dump {
 				t.PauseNs[i] = readUint64(r)
 			}
 			t.NumGC = uint32(readUint64(r))
+			d.memstats = t
 		default:
 			log.Fatal("unknown record kind %d", kind)
 		}
@@ -387,9 +397,30 @@ func getDwarf(execname string) *dwarf.Data {
 	return nil
 }
 
-func globalMap(d *Dump, execname string) *Heap {
-	g := &Heap{}
-	w := getDwarf(execname)
+func readUleb(b []byte) ([]byte, uint64) {
+	r := uint64(0)
+	s := uint(0)
+	for {
+		x := b[0]
+		b = b[1:]
+		r |= uint64(x & 127) << s
+		if x & 128 == 0 {
+			break
+		}
+		s += 7
+		
+	}
+	return b, r
+}
+func readSleb(b []byte) ([]byte, int64) {
+	c, v := readUleb(b)
+	// sign extend
+	k := (len(b) - len(c)) * 7
+	return c, int64(v) << uint(64 - k) >> uint(64 - k)
+}
+
+func globalMap(d *Dump, w *dwarf.Data) *Heap {
+	h := &Heap{}
 	r := w.Reader()
 	for {
 		e, err := r.Next()
@@ -404,28 +435,74 @@ func globalMap(d *Dump, execname string) *Heap {
 		}
 		name := e.Val(dwarf.AttrName).(string)
 		locexpr := e.Val(dwarf.AttrLocation).([]uint8)
-		if len(locexpr) > 0 && locexpr[0] == 0x03 { // DW_OP_addr
+		if len(locexpr) > 0 && locexpr[0] == dw_op_addr {
 			loc := readPtr(d, locexpr[1:])
-			g.Insert(loc, name)
+			h.Insert(loc, name)
 		}
 	}
-	return g
+	return h
 }
 
-//func localsMap(d *Dump, execname string) map[string]*Heap {
-//}
+// localsMap returns a map from function name to a *Heap.  The heap
+// contains pairs (x,y) where x is the distance below parentaddr of
+// the start of that variable, and y is the name of the variable.
+func localsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
+	m := make(map[string]*Heap, 0)
+	r := w.Reader()
+	var funcname string
+	for {
+		e, err := r.Next()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if e == nil {
+			break
+		}
+		switch e.Tag {
+		case dwarf.TagSubprogram:
+			funcname = e.Val(dwarf.AttrName).(string)
+			m[funcname] = &Heap{}
+		case dwarf.TagVariable:
+			name := e.Val(dwarf.AttrName).(string)
+			loc := e.Val(dwarf.AttrLocation).([]uint8)
+			if len(loc) >= 1 && loc[0] == dw_op_call_frame_cfa {
+				var offset int64
+				if len(loc) == 1 {
+					offset = 0
+				} else if len(loc) >= 3 && loc[1] == dw_op_consts && loc[len(loc)-1] == dw_op_plus {
+					loc, offset = readSleb(loc[2:len(loc)-1])
+					if len(loc) != 0 {
+						break
+					}
+				}
+				m[funcname].Insert(uint64(-offset), name)
+			}
+		}
+	}
+	return m
+}
+// argsMap returns a map from function name to a *Heap.  The heap
+// contains pairs (x,y) where x is the distance above parentaddr of
+// the start of that variable, and y is the name of the variable.
+func argsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
+	return nil
+}
 
 // various maps used to link up data structures
 type LinkInfo struct {
 	dump    *Dump
 	types   map[uint64]*Type
 	itabs   map[uint64]*Itab
-	frames  map[frameId]*StackFrame
+	frames  map[frameKey]*StackFrame
 	globals *Heap
 	objects *Heap
+	locals  map[string]*Heap
+	args    map[string]*Heap
 }
 
-type frameId struct {
+// stack frames may be zero-sized, so we add call depth
+// to the key to ensure uniqueness.
+type frameKey struct {
 	sp    uint64
 	depth uint64
 }
@@ -493,7 +570,7 @@ func link(d *Dump, execname string) {
 	info.dump = d
 	info.types = make(map[uint64]*Type, len(d.types))
 	info.itabs = make(map[uint64]*Itab, len(d.itabs))
-	info.frames = make(map[frameId]*StackFrame, len(d.frames))
+	info.frames = make(map[frameKey]*StackFrame, len(d.frames))
 	for _, x := range d.types {
 		// Note: there may be duplicate type records in a dump.
 		// The duplicates get thrown away here.
@@ -503,17 +580,22 @@ func link(d *Dump, execname string) {
 		info.itabs[x.addr] = x
 	}
 	for _, x := range d.frames {
-		info.frames[frameId{x.addr, x.depth}] = x
+		info.frames[frameKey{x.addr, x.depth}] = x
 	}
 
-	// Binary-searchable map of global variables
-	info.globals = globalMap(d, execname)
+	// Binary-searchable map of global & local variables
+	w := getDwarf(execname)
+	info.globals = globalMap(d, w)
 
 	// Binary-searchable map of objects
 	info.objects = &Heap{}
 	for _, x := range d.objects {
 		info.objects.Insert(x.addr, x)
 	}
+
+	// Binary-searchable map of local variables for each function
+	info.locals = localsMap(d, w)
+	info.args = argsMap(d, w)
 
 	// link objects to types
 	for _, x := range d.objects {
@@ -529,14 +611,14 @@ func link(d *Dump, execname string) {
 
 	// link up frames in sequence
 	for _, f := range d.frames {
-		f.parent = info.frames[frameId{f.parentaddr, f.depth + 1}]
+		f.parent = info.frames[frameKey{f.parentaddr, f.depth + 1}]
 		// NOTE: the base frame of the stack (runtime.goexit usually)
 		// will fail the lookup here and set a nil pointer.
 	}
 
 	// link goroutines to frames & vice versa
 	for _, g := range d.goroutines {
-		g.tos = info.frames[frameId{g.tosaddr, 0}]
+		g.tos = info.frames[frameKey{g.tosaddr, 0}]
 		if g.tos == nil {
 			log.Fatal("tos missing")
 		}
@@ -551,10 +633,17 @@ func link(d *Dump, execname string) {
 
 	// link up roots to objects
 	for _, r := range d.stackroots {
-		r.frame = info.frames[frameId{r.frameaddr, r.depth}]
+		r.frame = info.frames[frameKey{r.frameaddr, r.depth}]
 		x := info.findObj(r.toaddr)
 		if x != nil {
 			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr}
+		}
+		// find name of this root
+		offset := r.frame.parentaddr - r.fromaddr
+		a, n := info.locals[r.frame.name].Lookup(offset)
+		if n != nil {
+			r.name = n.(string)
+			r.offset = offset - a
 		}
 	}
 	for _, r := range d.dataroots {
