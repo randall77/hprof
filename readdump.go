@@ -4,41 +4,43 @@ import (
 	"bufio"
 	"debug/dwarf"
 	"debug/elf"
+	"debug/macho"
+	"debug/pe"
 	"encoding/binary"
 	"io"
 	"log"
 	"os"
-	"sort"
 	"runtime"
+	"sort"
 )
 
 type fieldKind int
 type typeKind int
 
 const (
-	fieldKindPtr   fieldKind = 0
-	fieldKindString          = 1
-	fieldKindSlice           = 2
-	fieldKindIface           = 3
-	fieldKindEface           = 4
+	fieldKindPtr    fieldKind = 0
+	fieldKindString           = 1
+	fieldKindSlice            = 2
+	fieldKindIface            = 3
+	fieldKindEface            = 4
 
 	typeKindObject typeKind = 0
 	typeKindArray           = 1
 	typeKindChan            = 2
 
-	tagObject = 1
-	tagEOF = 3
-	tagStackRoot = 4
-	tagDataRoot = 5
-	tagOtherRoot = 6
-	tagType = 7
-	tagGoRoutine = 8
+	tagObject     = 1
+	tagEOF        = 3
+	tagStackRoot  = 4
+	tagDataRoot   = 5
+	tagOtherRoot  = 6
+	tagType       = 7
+	tagGoRoutine  = 8
 	tagStackFrame = 9
-	tagParams = 10
-	tagFinalizer = 11
-	tagItab = 12
-	tagOSThread = 13
-	tagMemStats = 14
+	tagParams     = 10
+	tagFinalizer  = 11
+	tagItab       = 12
+	tagOSThread   = 13
+	tagMemStats   = 14
 )
 
 type Dump struct {
@@ -107,11 +109,11 @@ type OtherRoot struct {
 
 // Object obj has a finalizer.
 type Finalizer struct {
-	obj uint64
-	fn uint64   // function to be run (a FuncVal*)
+	obj  uint64
+	fn   uint64 // function to be run (a FuncVal*)
 	code uint64 // code ptr (fn->fn)
 	fint uint64 // type of function argument
-	ot uint64   // type of object
+	ot   uint64 // type of object
 }
 
 // For the given itab value, is the corresponding
@@ -122,9 +124,9 @@ type Itab struct {
 }
 
 type OSThread struct {
-	addr uint64
-	id   uint64
-        procid uint64
+	addr   uint64
+	id     uint64
+	procid uint64
 }
 
 // A Field is a location in an object where there
@@ -137,34 +139,34 @@ type Field struct {
 type Type struct {
 	name     string // not necessarily unique
 	size     uint64
-	efaceptr bool   // Efaces with this type have a data field which is a pointer
+	efaceptr bool // Efaces with this type have a data field which is a pointer
 	fields   []Field
 
 	addr uint64
 }
 
 type GoRoutine struct {
-	tos *StackFrame // frame at the top of the stack (i.e. currently running)
+	tos  *StackFrame // frame at the top of the stack (i.e. currently running)
 	ctxt *Object
 
-	addr    uint64
-	tosaddr uint64
-	goid    uint64
-	gopc    uint64
-	status  uint64
-        issystem bool
+	addr         uint64
+	tosaddr      uint64
+	goid         uint64
+	gopc         uint64
+	status       uint64
+	issystem     bool
 	isbackground bool
-	waitsince uint64
-	waitreason string
-	ctxtaddr  uint64
-	maddr  uint64
+	waitsince    uint64
+	waitreason   string
+	ctxtaddr     uint64
+	maddr        uint64
 }
 
 type StackFrame struct {
-	name   string
-	parent *StackFrame
+	name      string
+	parent    *StackFrame
 	goroutine *GoRoutine
-	depth  uint64
+	depth     uint64
 
 	addr       uint64
 	parentaddr uint64
@@ -388,17 +390,38 @@ func (g Globals) find(p uint64) Global {
 	return g[j-1]
 }
 
+func getDwarf(execname string) *dwarf.Data {
+	e, err := elf.Open(execname)
+	if err == nil {
+		defer e.Close()
+		d, err := e.DWARF()
+		if err == nil {
+			return d
+		}
+	}
+	m, err := macho.Open(execname)
+	if err == nil {
+		defer m.Close()
+		d, err := m.DWARF()
+		if err == nil {
+			return d
+		}
+	}
+	p, err := pe.Open(execname)
+	if err == nil {
+		defer p.Close()
+		d, err := p.DWARF()
+		if err == nil {
+			return d
+		}
+	}
+	log.Fatal("can't get dwarf info from executable", err)
+	return nil
+}
+
 func globalMap(d *Dump, execname string) Globals {
 	var g Globals
-	f, err := elf.Open(execname)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-	w, err := f.DWARF()
-	if err != nil {
-		log.Fatal(err)
-	}
+	w := getDwarf(execname)
 	r := w.Reader()
 	for {
 		e, err := r.Next()
@@ -448,7 +471,7 @@ func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
 					log.Fatal("can't find eface type")
 				}
 				if t.efaceptr {
-					linkPtr(info, x, off + info.dump.ptrSize)
+					linkPtr(info, x, off+info.dump.ptrSize)
 				}
 			}
 		case fieldKindIface:
@@ -459,7 +482,7 @@ func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
 					log.Fatal("can't find iface tab")
 				}
 				if t.ptr {
-					linkPtr(info, x, off + info.dump.ptrSize)
+					linkPtr(info, x, off+info.dump.ptrSize)
 				}
 			}
 		}
@@ -497,7 +520,7 @@ func link(d *Dump, execname string) {
 		info.itabs[x.addr] = x
 	}
 	for _, x := range d.frames {
-		info.frames[frameId{x.addr,x.depth}] = x
+		info.frames[frameId{x.addr, x.depth}] = x
 	}
 
 	// Binary-searchable map of global variables
@@ -523,14 +546,14 @@ func link(d *Dump, execname string) {
 
 	// link up frames in sequence
 	for _, f := range d.frames {
-		f.parent = info.frames[frameId{f.parentaddr,f.depth+1}]
+		f.parent = info.frames[frameId{f.parentaddr, f.depth + 1}]
 		// NOTE: the base frame of the stack (runtime.goexit usually)
 		// will fail the lookup here and set a nil pointer.
 	}
 
 	// link goroutines to frames & vice versa
 	for _, g := range d.goroutines {
-		g.tos = info.frames[frameId{g.tosaddr,0}]
+		g.tos = info.frames[frameId{g.tosaddr, 0}]
 		if g.tos == nil {
 			log.Fatal("tos missing")
 		}
@@ -545,7 +568,7 @@ func link(d *Dump, execname string) {
 
 	// link up roots to objects
 	for _, r := range d.stackroots {
-		r.frame = info.frames[frameId{r.frameaddr,r.depth}]
+		r.frame = info.frames[frameId{r.frameaddr, r.depth}]
 		x := info.heap.find(r.toaddr)
 		if x != nil {
 			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr}
@@ -576,11 +599,11 @@ func link(d *Dump, execname string) {
 		case typeKindObject:
 			linkFields(&info, x, t.fields, 0)
 		case typeKindArray:
-			for i := uint64(0); i <= uint64(len(x.data)) - t.size; i += t.size {
+			for i := uint64(0); i <= uint64(len(x.data))-t.size; i += t.size {
 				linkFields(&info, x, t.fields, i)
 			}
 		case typeKindChan:
-			for i := d.hChanSize; i <= uint64(len(x.data)) - t.size; i += t.size {
+			for i := d.hChanSize; i <= uint64(len(x.data))-t.size; i += t.size {
 				linkFields(&info, x, t.fields, i)
 			}
 		}
