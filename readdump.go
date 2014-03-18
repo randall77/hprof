@@ -11,7 +11,6 @@ import (
 	"log"
 	"os"
 	"runtime"
-	"sort"
 )
 
 type fieldKind int
@@ -181,6 +180,7 @@ func readUint64(r io.ByteReader) uint64 {
 	}
 	return x
 }
+
 func readNBytes(r io.ByteReader, n uint64) []byte {
 	s := make([]byte, n)
 	for i := range s {
@@ -192,10 +192,12 @@ func readNBytes(r io.ByteReader, n uint64) []byte {
 	}
 	return s
 }
+
 func readString(r io.ByteReader) string {
 	n := readUint64(r)
 	return string(readNBytes(r, n))
 }
+
 func readBool(r io.ByteReader) bool {
 	b, err := r.ReadByte()
 	if err != nil {
@@ -356,40 +358,6 @@ func rawRead(filename string) *Dump {
 	}
 }
 
-type Heap []*Object
-
-func (h Heap) Len() int           { return len(h) }
-func (h Heap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h Heap) Less(i, j int) bool { return h[i].addr < h[j].addr }
-
-// returns the object containing the pointed-to address, or nil if none.
-func (h Heap) find(p uint64) *Object {
-	j := sort.Search(len(h), func(i int) bool { return p < h[i].addr+uint64(len(h[i].data)) })
-	if j < len(h) && p >= h[j].addr {
-		return h[j]
-	}
-	return nil
-}
-
-type Global struct {
-	name string
-	addr uint64
-}
-type Globals []Global
-
-func (g Globals) Len() int           { return len(g) }
-func (g Globals) Swap(i, j int)      { g[i], g[j] = g[j], g[i] }
-func (g Globals) Less(i, j int) bool { return g[i].addr < g[j].addr }
-
-// returns the global variable containing the given address.
-func (g Globals) find(p uint64) Global {
-	j := sort.Search(len(g), func(i int) bool { return p < g[i].addr })
-	if j == 0 {
-		return Global{"unknown global", 0}
-	}
-	return g[j-1]
-}
-
 func getDwarf(execname string) *dwarf.Data {
 	e, err := elf.Open(execname)
 	if err == nil {
@@ -419,8 +387,8 @@ func getDwarf(execname string) *dwarf.Data {
 	return nil
 }
 
-func globalMap(d *Dump, execname string) Globals {
-	var g Globals
+func globalMap(d *Dump, execname string) *Heap {
+	g := &Heap{}
 	w := getDwarf(execname)
 	r := w.Reader()
 	for {
@@ -438,20 +406,50 @@ func globalMap(d *Dump, execname string) Globals {
 		locexpr := e.Val(dwarf.AttrLocation).([]uint8)
 		if len(locexpr) > 0 && locexpr[0] == 0x03 { // DW_OP_addr
 			loc := readPtr(d, locexpr[1:])
-			g = append(g, Global{name, loc})
+			g.Insert(loc, name)
 		}
 	}
-	sort.Sort(g)
 	return g
+}
+
+//func localsMap(d *Dump, execname string) map[string]*Heap {
+//}
+
+// various maps used to link up data structures
+type LinkInfo struct {
+	dump    *Dump
+	types   map[uint64]*Type
+	itabs   map[uint64]*Itab
+	frames  map[frameId]*StackFrame
+	globals *Heap
+	objects *Heap
+}
+
+type frameId struct {
+	sp    uint64
+	depth uint64
+}
+
+func (info *LinkInfo) findObj(addr uint64) *Object {
+	_, xi := info.objects.Lookup(addr)
+	if xi == nil {
+		return nil
+	}
+	x := xi.(*Object)
+	if addr >= x.addr + uint64(len(x.data)) {
+		return nil
+	}
+	return x
 }
 
 func linkPtr(info *LinkInfo, x *Object, off uint64) {
 	p := readPtr(info.dump, x.data[off:])
-	q := info.heap.find(p)
+	q := info.findObj(p)
 	if q != nil {
 		x.edges = append(x.edges, Edge{q, off, p - q.addr})
 	}
 }
+
 func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
 	for _, f := range fields {
 		off := offset + f.offset
@@ -489,21 +487,6 @@ func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
 	}
 }
 
-// various maps used to link up data structures
-type LinkInfo struct {
-	dump    *Dump
-	types   map[uint64]*Type
-	itabs   map[uint64]*Itab
-	frames  map[frameId]*StackFrame
-	globals Globals
-	heap    Heap
-}
-
-type frameId struct {
-	sp    uint64
-	depth uint64
-}
-
 func link(d *Dump, execname string) {
 	// initialize some maps used for linking
 	var info LinkInfo
@@ -527,10 +510,10 @@ func link(d *Dump, execname string) {
 	info.globals = globalMap(d, execname)
 
 	// Binary-searchable map of objects
+	info.objects = &Heap{}
 	for _, x := range d.objects {
-		info.heap = append(info.heap, x)
+		info.objects.Insert(x.addr, x)
 	}
-	sort.Sort(info.heap)
 
 	// link objects to types
 	for _, x := range d.objects {
@@ -560,7 +543,7 @@ func link(d *Dump, execname string) {
 		for f := g.tos; f != nil; f = f.parent {
 			f.goroutine = g
 		}
-		x := info.heap.find(g.ctxtaddr)
+		x := info.findObj(g.ctxtaddr)
 		if x != nil {
 			g.ctxt = x
 		}
@@ -569,21 +552,25 @@ func link(d *Dump, execname string) {
 	// link up roots to objects
 	for _, r := range d.stackroots {
 		r.frame = info.frames[frameId{r.frameaddr, r.depth}]
-		x := info.heap.find(r.toaddr)
+		x := info.findObj(r.toaddr)
 		if x != nil {
 			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr}
 		}
 	}
 	for _, r := range d.dataroots {
-		g := info.globals.find(r.fromaddr)
-		r.name = g.name
-		q := info.heap.find(r.toaddr)
-		if q != nil {
-			r.e = Edge{q, r.fromaddr - g.addr, r.toaddr - q.addr}
+		a, g := info.globals.Lookup(r.fromaddr)
+		if g != nil {
+			r.name = g.(string)
+		} else {
+			r.name = "unknown global"
+		}
+		x := info.findObj(r.toaddr)
+		if x != nil {
+			r.e = Edge{x, r.fromaddr - a, r.toaddr - x.addr}
 		}
 	}
 	for _, r := range d.otherroots {
-		x := info.heap.find(r.toaddr)
+		x := info.findObj(r.toaddr)
 		if x != nil {
 			r.e = Edge{x, 0, r.toaddr - x.addr}
 		}
@@ -611,9 +598,9 @@ func link(d *Dump, execname string) {
 
 	// Add links for finalizers
 	for _, f := range d.finalizers {
-		x := info.heap.find(f.obj)
+		x := info.findObj(f.obj)
 		for _, addr := range []uint64{f.fn, f.fint, f.ot} {
-			y := info.heap.find(addr)
+			y := info.findObj(addr)
 			if x != nil && y != nil {
 				x.edges = append(x.edges, Edge{x, 0, addr - y.addr})
 				// TODO: mark edge as arising from a finalizer somehow?
