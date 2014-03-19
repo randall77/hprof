@@ -11,6 +11,8 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"regexp"
+	"fmt"
 )
 
 type fieldKind int
@@ -71,12 +73,16 @@ type Dump struct {
 }
 
 // An edge is a directed connection between two objects.  The source
-// object is implicit.  It includes information about where the edge
+// object is implicit.  An edge includes information about where it
 // leaves the source object and where it lands in the destination obj.
 type Edge struct {
 	to         *Object // object pointed to
 	fromoffset uint64  // offset in source object where ptr was found
 	tooffset   uint64  // offset in destination object where ptr lands
+
+	// name of field / offset within field, if known
+	fieldname   string
+	fieldoffset uint64
 }
 
 type Object struct {
@@ -92,8 +98,10 @@ type Object struct {
 type StackRoot struct {
 	frame *StackFrame
 	e     Edge
-	name  string    // name of a local variable
-	offset uint64   // offset within local variable (e.fromoffset is offset within stack frame)
+
+	// name of stack variable / offset within variable, if known
+	name  string
+	offset uint64
 
 	fromaddr  uint64
 	toaddr    uint64
@@ -172,6 +180,7 @@ type GoRoutine struct {
 type StackFrame struct {
 	name      string
 	parent    *StackFrame
+	// TODO: child, so we can figure out names for our outargs section
 	goroutine *GoRoutine
 	depth     uint64
 
@@ -488,6 +497,42 @@ func argsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	return nil
 }
 
+func structsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
+	m := make(map[string]*Heap, 0)
+	r := w.Reader()
+	var structname string
+	for {
+		e, err := r.Next()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if e == nil {
+			break
+		}
+		switch e.Tag {
+		case dwarf.TagStructType:
+			structname = e.Val(dwarf.AttrName).(string)
+			m[structname] = &Heap{}
+		case dwarf.TagMember:
+			name := e.Val(dwarf.AttrName).(string)
+			loc := e.Val(dwarf.AttrDataMemberLoc).([]uint8)
+			if len(loc) >= 1 && loc[0] == dw_op_consts {
+				var offset int64
+				if len(loc) == 0 {
+					offset = 0
+				} else if len(loc) >= 2 && loc[0] == dw_op_consts && loc[len(loc)-1] == dw_op_plus {
+					loc, offset = readSleb(loc[1:len(loc)-1])
+					if len(loc) != 0 {
+						break
+					}
+				}
+				m[structname].Insert(uint64(offset), name)
+			}
+		}
+	}
+	return m
+}
+
 // various maps used to link up data structures
 type LinkInfo struct {
 	dump    *Dump
@@ -498,6 +543,7 @@ type LinkInfo struct {
 	objects *Heap
 	locals  map[string]*Heap
 	args    map[string]*Heap
+	structs map[string]*Heap
 }
 
 // stack frames may be zero-sized, so we add call depth
@@ -519,26 +565,43 @@ func (info *LinkInfo) findObj(addr uint64) *Object {
 	return x
 }
 
-func linkPtr(info *LinkInfo, x *Object, off uint64) {
+var adjMap = regexp.MustCompile(`map.hdr\[(.*)\](.*)`)
+
+func (info *LinkInfo) linkPtr(x *Object, off uint64) {
 	p := readPtr(info.dump, x.data[off:])
 	q := info.findObj(p)
 	if q != nil {
-		x.edges = append(x.edges, Edge{q, off, p - q.addr})
+		var fieldname string
+		var fieldoffset uint64
+		name := x.typ.name
+		s := adjMap.FindStringSubmatch(name)
+		if s != nil {
+			name = fmt.Sprintf("hash<%s,%s>", s[1], s[2])
+		}
+		h := info.structs[name]
+		if h != nil {
+			a, v := h.Lookup(off)
+			if v != nil {
+				fieldname = v.(string)
+				fieldoffset = off - a
+			}
+		}
+		x.edges = append(x.edges, Edge{q, off, p - q.addr, fieldname, fieldoffset})
 	}
 }
 
-func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
+func (info *LinkInfo) linkFields(x *Object, fields []Field, offset uint64) {
 	for _, f := range fields {
 		off := offset + f.offset
 		switch f.kind {
 		case fieldKindPtr:
-			linkPtr(info, x, off)
+			info.linkPtr(x, off)
 		case fieldKindString:
-			linkPtr(info, x, off)
+			info.linkPtr(x, off)
 		case fieldKindSlice:
-			linkPtr(info, x, off)
+			info.linkPtr(x, off)
 		case fieldKindEface:
-			linkPtr(info, x, off)
+			info.linkPtr(x, off)
 			tp := readPtr(info.dump, x.data[off:])
 			if tp != 0 {
 				t := info.types[tp]
@@ -546,7 +609,7 @@ func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
 					log.Fatal("can't find eface type")
 				}
 				if t.efaceptr {
-					linkPtr(info, x, off+info.dump.ptrSize)
+					info.linkPtr(x, off+info.dump.ptrSize)
 				}
 			}
 		case fieldKindIface:
@@ -557,7 +620,7 @@ func linkFields(info *LinkInfo, x *Object, fields []Field, offset uint64) {
 					log.Fatal("can't find iface tab")
 				}
 				if t.ptr {
-					linkPtr(info, x, off+info.dump.ptrSize)
+					info.linkPtr(x, off+info.dump.ptrSize)
 				}
 			}
 		}
@@ -596,6 +659,7 @@ func link(d *Dump, execname string) {
 	// Binary-searchable map of local variables for each function
 	info.locals = localsMap(d, w)
 	info.args = argsMap(d, w)
+	info.structs = structsMap(d, w)
 
 	// link objects to types
 	for _, x := range d.objects {
@@ -636,7 +700,7 @@ func link(d *Dump, execname string) {
 		r.frame = info.frames[frameKey{r.frameaddr, r.depth}]
 		x := info.findObj(r.toaddr)
 		if x != nil {
-			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr}
+			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr, "", 0}
 		}
 		// find name of this root
 		offset := r.frame.parentaddr - r.fromaddr
@@ -655,13 +719,13 @@ func link(d *Dump, execname string) {
 		}
 		x := info.findObj(r.toaddr)
 		if x != nil {
-			r.e = Edge{x, r.fromaddr - a, r.toaddr - x.addr}
+			r.e = Edge{x, r.fromaddr - a, r.toaddr - x.addr, "", 0}
 		}
 	}
 	for _, r := range d.otherroots {
 		x := info.findObj(r.toaddr)
 		if x != nil {
-			r.e = Edge{x, 0, r.toaddr - x.addr}
+			r.e = Edge{x, 0, r.toaddr - x.addr, "", 0}
 		}
 	}
 
@@ -673,14 +737,14 @@ func link(d *Dump, execname string) {
 		}
 		switch x.kind {
 		case typeKindObject:
-			linkFields(&info, x, t.fields, 0)
+			info.linkFields(x, t.fields, 0)
 		case typeKindArray:
 			for i := uint64(0); i <= uint64(len(x.data))-t.size; i += t.size {
-				linkFields(&info, x, t.fields, i)
+				info.linkFields(x, t.fields, i)
 			}
 		case typeKindChan:
 			for i := d.hChanSize; i <= uint64(len(x.data))-t.size; i += t.size {
-				linkFields(&info, x, t.fields, i)
+				info.linkFields(x, t.fields, i)
 			}
 		}
 	}
@@ -691,7 +755,7 @@ func link(d *Dump, execname string) {
 		for _, addr := range []uint64{f.fn, f.fint, f.ot} {
 			y := info.findObj(addr)
 			if x != nil && y != nil {
-				x.edges = append(x.edges, Edge{x, 0, addr - y.addr})
+				x.edges = append(x.edges, Edge{x, 0, addr - y.addr, "", 0})
 				// TODO: mark edge as arising from a finalizer somehow?
 			}
 		}
