@@ -26,9 +26,10 @@ const (
 	fieldKindEface            = 4
 	fieldKindEol              = 5
 
-	typeKindObject typeKind = 0
-	typeKindArray           = 1
-	typeKindChan            = 2
+	typeKindObject       typeKind = 0
+	typeKindArray                 = 1
+	typeKindChan                  = 2
+	typeKindConservative          = 127
 
 	tagObject     = 1
 	tagEOF        = 3
@@ -757,7 +758,7 @@ func link(d *Dump, execname string) { // TODO: remove execname
 	// link objects to each other
 	for _, x := range d.objects {
 		t := x.typ
-		if t == nil {
+		if t == nil && x.kind != typeKindConservative {
 			continue // typeless objects have no pointers
 		}
 		switch x.kind {
@@ -770,6 +771,10 @@ func link(d *Dump, execname string) { // TODO: remove execname
 		case typeKindChan:
 			for i := d.hChanSize; i <= uint64(len(x.data))-t.size; i += t.size {
 				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i/t.size))
+			}
+		case typeKindConservative:
+			for i := uint64(0); i < uint64(len(x.data)); i += d.ptrSize {
+				x.edges = info.appendEdge(x.edges, x.data, i, Field{fieldKindPtr, i, fmt.Sprintf("*%d", i)}, -1)
 			}
 		}
 	}
