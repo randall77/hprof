@@ -113,16 +113,12 @@ func main() {
 		for _, e := range f.edges {
 			if e.to != nil {
 				var taillabel, headlabel string
-				/*
-					if r.name != "" {
-						if r.offset == 0 {
-							taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", r.name)
-						} else {
-							taillabel = fmt.Sprintf(" [taillabel=\"%s:%d\"]", r.name, r.offset)
-						}
-				*/
 				if e.fieldname != "" {
-					taillabel =fmt.Sprintf(" [taillabel=\"%s\"]", e.fieldname)
+					if e.fieldoffset == 0 {
+						taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", e.fieldname)
+					} else {
+						taillabel = fmt.Sprintf(" [taillabel=\"%s:%d\"]", e.fieldname, e.fieldoffset)
+					}
 				} else if e.fromoffset != 0 {
 					taillabel = fmt.Sprintf(" [taillabel=\"%d\"]", e.fromoffset)
 				}

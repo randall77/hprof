@@ -7,12 +7,12 @@ import (
 	"debug/macho"
 	"debug/pe"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"regexp"
 	"runtime"
-	"fmt"
 )
 
 type fieldKind int
@@ -173,10 +173,11 @@ type StackFrame struct {
 	data      []byte
 	edges     []Edge
 
-	addr   uint64
-	entry  uint64
-	pc     uint64
-	fields []Field
+	addr      uint64
+	childaddr uint64
+	entry     uint64
+	pc        uint64
+	fields    []Field
 }
 
 func readUint64(r io.ByteReader) uint64 {
@@ -289,6 +290,7 @@ func rawRead(filename string) *Dump {
 			t := &StackFrame{}
 			t.addr = readUint64(r)
 			t.depth = readUint64(r)
+			t.childaddr = readUint64(r)
 			t.data = readBytes(r)
 			t.entry = readUint64(r)
 			t.pc = readUint64(r)
@@ -543,10 +545,7 @@ type LinkInfo struct {
 	dump    *Dump
 	types   map[uint64]*Type
 	itabs   map[uint64]*Itab
-	frames  map[frameKey]*StackFrame
-	globals *Heap
 	objects *Heap
-	args    map[string]*Heap
 }
 
 // stack frames may be zero-sized, so we add call depth
@@ -640,7 +639,7 @@ func naming(d *Dump, execname string) {
 			if a == off {
 				r.fields[i].name = v.(string)
 			} else {
-				r.fields[i].name = fmt.Sprintf("%s:%d", v, a - off)
+				r.fields[i].name = fmt.Sprintf("%s:%d", v, a-off)
 			}
 		}
 	}
@@ -660,7 +659,7 @@ func naming(d *Dump, execname string) {
 			} else if a == f.offset {
 				t.fields[i].name = v.(string)
 			} else {
-				t.fields[i].name = fmt.Sprintf("%s:%d", v, a - f.offset)
+				t.fields[i].name = fmt.Sprintf("%s:%d", v, a-f.offset)
 			}
 		}
 	}
@@ -672,7 +671,6 @@ func link(d *Dump, execname string) { // TODO: remove execname
 	info.dump = d
 	info.types = make(map[uint64]*Type, len(d.types))
 	info.itabs = make(map[uint64]*Itab, len(d.itabs))
-	info.frames = make(map[frameKey]*StackFrame, len(d.frames))
 	for _, x := range d.types {
 		// Note: there may be duplicate type records in a dump.
 		// The duplicates get thrown away here.
@@ -681,13 +679,14 @@ func link(d *Dump, execname string) { // TODO: remove execname
 	for _, x := range d.itabs {
 		info.itabs[x.addr] = x
 	}
+	frames := make(map[frameKey]*StackFrame, len(d.frames))
 	for _, x := range d.frames {
-		info.frames[frameKey{x.addr, x.depth}] = x
+		frames[frameKey{x.addr, x.depth}] = x
 	}
 
-	// Binary-searchable map of global & local variables
+	// Binary-searchable map of global variables
 	w := getDwarf(execname)
-	info.globals = globalMap(d, w)
+	globals := globalMap(d, w)
 
 	// Binary-searchable map of objects
 	info.objects = &Heap{}
@@ -714,14 +713,16 @@ func link(d *Dump, execname string) { // TODO: remove execname
 
 	// link up frames in sequence
 	for _, f := range d.frames {
-		f.parent = info.frames[frameKey{f.addr + uint64(len(f.data)), f.depth + 1}]
-		// NOTE: the base frame of the stack (runtime.goexit usually)
-		// will fail the lookup here and set a nil pointer.
+		if f.depth == 0 {
+			continue
+		}
+		g := frames[frameKey{f.childaddr, f.depth - 1}]
+		g.parent = f
 	}
 
 	// link goroutines to frames & vice versa
 	for _, g := range d.goroutines {
-		g.tos = info.frames[frameKey{g.tosaddr, 0}]
+		g.tos = frames[frameKey{g.tosaddr, 0}]
 		if g.tos == nil {
 			log.Fatal("tos missing")
 		}
@@ -735,7 +736,7 @@ func link(d *Dump, execname string) { // TODO: remove execname
 	}
 
 	for _, r := range d.dataroots {
-		a, g := info.globals.Lookup(r.fromaddr)
+		a, g := globals.Lookup(r.fromaddr)
 		if g != nil {
 			r.name = g.(string)
 		} else {
@@ -764,11 +765,11 @@ func link(d *Dump, execname string) { // TODO: remove execname
 			x.edges = info.appendFields(x.edges, x.data, t.fields, 0, -1)
 		case typeKindArray:
 			for i := uint64(0); i <= uint64(len(x.data))-t.size; i += t.size {
-				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i / t.size))
+				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i/t.size))
 			}
 		case typeKindChan:
 			for i := d.hChanSize; i <= uint64(len(x.data))-t.size; i += t.size {
-				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i / t.size))
+				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i/t.size))
 			}
 		}
 	}
