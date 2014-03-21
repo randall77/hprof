@@ -121,7 +121,8 @@ func main() {
 							taillabel = fmt.Sprintf(" [taillabel=\"%s:%d\"]", r.name, r.offset)
 						}
 				*/
-				if false {
+				if e.fieldname != "" {
+					taillabel =fmt.Sprintf(" [taillabel=\"%s\"]", e.fieldname)
 				} else if e.fromoffset != 0 {
 					taillabel = fmt.Sprintf(" [taillabel=\"%d\"]", e.fromoffset)
 				}

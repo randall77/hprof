@@ -12,7 +12,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
-	//"fmt"
+	"fmt"
 )
 
 type fieldKind int
@@ -135,6 +135,7 @@ type OSThread struct {
 type Field struct {
 	kind   fieldKind
 	offset uint64
+	name   string
 }
 
 type Type struct {
@@ -267,7 +268,7 @@ func rawRead(filename string) *Dump {
 				if kind == fieldKindEol {
 					break
 				}
-				typ.fields = append(typ.fields, Field{kind, readUint64(r)})
+				typ.fields = append(typ.fields, Field{kind, readUint64(r), ""})
 			}
 			d.types = append(d.types, typ)
 		case tagGoRoutine:
@@ -297,7 +298,7 @@ func rawRead(filename string) *Dump {
 				if kind == fieldKindEol {
 					break
 				}
-				t.fields = append(t.fields, Field{kind, readUint64(r)})
+				t.fields = append(t.fields, Field{kind, readUint64(r), ""})
 			}
 			d.frames = append(d.frames, t)
 		case tagParams:
@@ -490,6 +491,9 @@ func argsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	return nil
 }
 
+var adjMapHdr = regexp.MustCompile(`hash<(.*),(.*)>`)
+var adjMapBucket = regexp.MustCompile(`bucket<(.*),(.*)>`)
+// maps from a type name to a heap of (offset/name) pairs for that struct.
 func structsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	m := make(map[string]*Heap, 0)
 	r := w.Reader()
@@ -505,22 +509,28 @@ func structsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 		switch e.Tag {
 		case dwarf.TagStructType:
 			structname = e.Val(dwarf.AttrName).(string)
+			k := adjMapHdr.FindStringSubmatch(structname)
+			if k != nil {
+				structname = fmt.Sprintf("map.hdr[%s]%s", k[1], k[2])
+			}
+			k = adjMapBucket.FindStringSubmatch(structname)
+			if k != nil {
+				structname = fmt.Sprintf("map.bucket[%s]%s", k[1], k[2])
+			}
 			m[structname] = &Heap{}
 		case dwarf.TagMember:
 			name := e.Val(dwarf.AttrName).(string)
 			loc := e.Val(dwarf.AttrDataMemberLoc).([]uint8)
-			if len(loc) >= 1 && loc[0] == dw_op_consts {
-				var offset int64
-				if len(loc) == 0 {
-					offset = 0
-				} else if len(loc) >= 2 && loc[0] == dw_op_consts && loc[len(loc)-1] == dw_op_plus {
-					loc, offset = readSleb(loc[1 : len(loc)-1])
-					if len(loc) != 0 {
-						break
-					}
+			var offset int64
+			if len(loc) == 0 {
+				offset = 0
+			} else if len(loc) >= 2 && loc[0] == dw_op_consts && loc[len(loc)-1] == dw_op_plus {
+				loc, offset = readSleb(loc[1 : len(loc)-1])
+				if len(loc) != 0 {
+					break
 				}
-				m[structname].Insert(uint64(offset), name)
 			}
+			m[structname].Insert(uint64(offset), name)
 		}
 	}
 	return m
@@ -534,9 +544,7 @@ type LinkInfo struct {
 	frames  map[frameKey]*StackFrame
 	globals *Heap
 	objects *Heap
-	locals  map[string]*Heap
 	args    map[string]*Heap
-	structs map[string]*Heap
 }
 
 // stack frames may be zero-sized, so we add call depth
@@ -558,31 +566,15 @@ func (info *LinkInfo) findObj(addr uint64) *Object {
 	return x
 }
 
-var adjMap = regexp.MustCompile(`map.hdr\[(.*)\](.*)`)
-
 // appendEdge might add an edge to edges.  Returns new edges.
 //   Requires data[off:] be a pointer
 //   Adds an edge if that pointer points to a valid object.
-func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64) []Edge {
+func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64, f Field) []Edge {
 	p := readPtr(info.dump, data[off:])
 	q := info.findObj(p)
 	if q != nil {
-		var fieldname string
-		var fieldoffset uint64
-		// name := x.typ.name
-		// s := adjMap.FindStringSubmatch(name)
-		// if s != nil {
-		// 	name = fmt.Sprintf("hash<%s,%s>", s[1], s[2])
-		// }
-		// h := info.structs[name]
-		// if h != nil {
-		// 	a, v := h.Lookup(off)
-		// 	if v != nil {
-		// 		fieldname = v.(string)
-		// 		fieldoffset = off - a
-		// 	}
-		// }
-		edges = append(edges, Edge{q, off, p - q.addr, fieldname, fieldoffset})
+		var fieldoffset uint64 // TODO
+		edges = append(edges, Edge{q, off, p - q.addr, f.name, fieldoffset})
 	}
 	return edges
 }
@@ -592,13 +584,13 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 		off := offset + f.offset
 		switch f.kind {
 		case fieldKindPtr:
-			edges = info.appendEdge(edges, data, off)
+			edges = info.appendEdge(edges, data, off, f)
 		case fieldKindString:
-			edges = info.appendEdge(edges, data, off)
+			edges = info.appendEdge(edges, data, off, f)
 		case fieldKindSlice:
-			edges = info.appendEdge(edges, data, off)
+			edges = info.appendEdge(edges, data, off, f)
 		case fieldKindEface:
-			edges = info.appendEdge(edges, data, off)
+			edges = info.appendEdge(edges, data, off, f)
 			tp := readPtr(info.dump, data[off:])
 			if tp != 0 {
 				t := info.types[tp]
@@ -606,7 +598,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 					log.Fatal("can't find eface type")
 				}
 				if t.efaceptr {
-					edges = info.appendEdge(edges, data, off+info.dump.ptrSize)
+					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f)
 				}
 			}
 		case fieldKindIface:
@@ -617,7 +609,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 					log.Fatal("can't find iface tab")
 				}
 				if t.ptr {
-					edges = info.appendEdge(edges, data, off+info.dump.ptrSize)
+					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f)
 				}
 			}
 		}
@@ -625,7 +617,48 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 	return edges
 }
 
-func link(d *Dump, execname string) {
+// Names fields it can for better debugging output
+func naming(d *Dump, execname string) {
+	w := getDwarf(execname)
+
+	// name all frame variables
+	locals := localsMap(d, w)
+	for _, r := range d.frames {
+		h := locals[r.name]
+		for i, f := range r.fields {
+			off := uint64(len(r.data)) - f.offset
+			a, v := h.Lookup(off)
+			if a == off {
+				r.fields[i].name = v.(string)
+			} else {
+				r.fields[i].name = fmt.Sprintf("%s:%d", v, a - off)
+			}
+		}
+	}
+	// TODO: argsmap
+
+	// naming for struct fields
+	structs := structsMap(d, w)
+	for _, t := range d.types {
+		h := structs[t.name]
+		if h == nil {
+			continue
+		}
+		for i, f := range t.fields {
+			a, v := h.Lookup(f.offset)
+			if v == nil {
+				t.fields[i].name = fmt.Sprintf("unk%d", f.offset)
+			} else if a == f.offset {
+				t.fields[i].name = v.(string)
+			} else {
+				t.fields[i].name = fmt.Sprintf("%s:%d", v, a - f.offset)
+			}
+		}
+	}
+	_ = structs
+}
+
+func link(d *Dump, execname string) { // TODO: remove execname
 	// initialize some maps used for linking
 	var info LinkInfo
 	info.dump = d
@@ -653,11 +686,6 @@ func link(d *Dump, execname string) {
 	for _, x := range d.objects {
 		info.objects.Insert(x.addr, x)
 	}
-
-	// Binary-searchable map of local variables for each function
-	info.locals = localsMap(d, w)
-	info.args = argsMap(d, w)
-	info.structs = structsMap(d, w)
 
 	// link objects to types
 	for _, x := range d.objects {
@@ -752,7 +780,7 @@ func link(d *Dump, execname string) {
 
 func Read(dumpname, execname string) *Dump {
 	d := rawRead(dumpname)
-	// TODO: name fields
+	naming(d, execname)
 	link(d, execname)
 	return d
 }
