@@ -16,11 +16,9 @@ func main() {
 	var q []*Object
 	for _, f := range d.frames {
 		for _, e := range f.edges {
-			if e.to != nil {
-				if _, ok := reachable[e.to]; !ok {
-					reachable[e.to] = struct{}{}
-					q = append(q, e.to)
-				}
+			if _, ok := reachable[e.to]; !ok {
+				reachable[e.to] = struct{}{}
+				q = append(q, e.to)
 			}
 		}
 	}
@@ -38,6 +36,15 @@ func main() {
 				reachable[r.e.to] = struct{}{}
 				q = append(q, r.e.to)
 			}
+		}
+	}
+	for _, f := range d.qfinal {
+		for _, e := range f.edges {
+			if _, ok := reachable[e.to]; !ok {
+				reachable[e.to] = struct{}{}
+				q = append(q, e.to)
+			}
+
 		}
 	}
 	for _, g := range d.goroutines {
@@ -152,6 +159,16 @@ func main() {
 			}
 			fmt.Printf("  \"%s\" [shape=diamond];\n", r.description)
 			fmt.Printf("  \"%s\" -> v%x%s;\n", r.description, e.to.addr, headlabel)
+		}
+	}
+	for _, f := range d.qfinal {
+		for _, e := range f.edges {
+			var headlabel string
+			if e.tooffset != 0 {
+				headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.tooffset)
+			}
+			fmt.Printf("  \"queued finalizers\" [shape=diamond];\n")
+			fmt.Printf("  \"queued finalizers\" -> v%x%s;\n", e.to.addr, headlabel)
 		}
 	}
 

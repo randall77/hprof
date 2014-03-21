@@ -43,6 +43,7 @@ const (
 	tagItab       = 12
 	tagOSThread   = 13
 	tagMemStats   = 14
+	tagQFinal     = 15
 
 	// DWARF constants
 	dw_op_call_frame_cfa = 156
@@ -66,7 +67,8 @@ type Dump struct {
 	goroutines []*GoRoutine
 	dataroots  []*DataRoot
 	otherroots []*OtherRoot
-	finalizers []*Finalizer
+	finalizers []*Finalizer // pending finalizers, object still live
+	qfinal     []*QFinalizer // finalizers which are ready to run
 	itabs      []*Itab
 	osthreads  []*OSThread
 	memstats   *runtime.MemStats
@@ -116,6 +118,16 @@ type Finalizer struct {
 	code uint64 // code ptr (fn->fn)
 	fint uint64 // type of function argument
 	ot   uint64 // type of object
+}
+
+// Finalizer that's ready to run
+type QFinalizer struct {
+	obj  uint64
+	fn   uint64 // function to be run (a FuncVal*)
+	code uint64 // code ptr (fn->fn)
+	fint uint64 // type of function argument
+	ot   uint64 // type of object
+	edges []Edge
 }
 
 // For the given itab value, is the corresponding
@@ -325,6 +337,14 @@ func rawRead(filename string) *Dump {
 			t.fint = readUint64(r)
 			t.ot = readUint64(r)
 			d.finalizers = append(d.finalizers, t)
+		case tagQFinal:
+			t := &QFinalizer{}
+			t.obj = readUint64(r)
+			t.fn = readUint64(r)
+			t.code = readUint64(r)
+			t.fint = readUint64(r)
+			t.ot = readUint64(r)
+			d.qfinal = append(d.qfinal, t)
 		case tagItab:
 			t := &Itab{}
 			t.addr = readUint64(r)
@@ -588,6 +608,10 @@ func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64, f Field,
 func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, offset uint64, idx int64) []Edge {
 	for _, f := range fields {
 		off := offset + f.offset
+		if off >= uint64(len(data)) {
+		       // TODO: what the heck is this?
+		       continue
+		}
 		switch f.kind {
 		case fieldKindPtr:
 			edges = info.appendEdge(edges, data, off, f, idx)
@@ -785,8 +809,15 @@ func link(d *Dump, execname string) { // TODO: remove execname
 		for _, addr := range []uint64{f.fn, f.fint, f.ot} {
 			y := info.findObj(addr)
 			if x != nil && y != nil {
-				x.edges = append(x.edges, Edge{x, 0, addr - y.addr, "", 0})
-				// TODO: mark edge as arising from a finalizer somehow?
+				x.edges = append(x.edges, Edge{y, 0, addr - y.addr, "finalizer", 0})
+			}
+		}
+	}
+	for _, f := range d.qfinal {
+		for _, addr := range []uint64{f.obj, f.fn, f.fint, f.ot} {
+			x := info.findObj(addr)
+			if x != nil {
+				f.edges = append(f.edges, Edge{x, 0, addr - x.addr, "", 0})
 			}
 		}
 	}
