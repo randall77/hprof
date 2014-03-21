@@ -446,8 +446,8 @@ func globalMap(d *Dump, w *dwarf.Data) *Heap {
 }
 
 // localsMap returns a map from function name to a *Heap.  The heap
-// contains pairs (x,y) where x is the distance below parentaddr of
-// the start of that variable, and y is the name of the variable.
+// contains pairs (x,y) where x is the distance before the end of frame
+// of the start of that variable, and y is the name of the variable.
 func localsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	m := make(map[string]*Heap, 0)
 	r := w.Reader()
@@ -491,8 +491,10 @@ func argsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	return nil
 }
 
+// rewrites from dwarf-style type names to runtime-style type names
 var adjMapHdr = regexp.MustCompile(`hash<(.*),(.*)>`)
 var adjMapBucket = regexp.MustCompile(`bucket<(.*),(.*)>`)
+
 // maps from a type name to a heap of (offset/name) pairs for that struct.
 func structsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	m := make(map[string]*Heap, 0)
@@ -569,28 +571,32 @@ func (info *LinkInfo) findObj(addr uint64) *Object {
 // appendEdge might add an edge to edges.  Returns new edges.
 //   Requires data[off:] be a pointer
 //   Adds an edge if that pointer points to a valid object.
-func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64, f Field) []Edge {
+func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64, f Field, idx int64) []Edge {
 	p := readPtr(info.dump, data[off:])
 	q := info.findObj(p)
 	if q != nil {
 		var fieldoffset uint64 // TODO
-		edges = append(edges, Edge{q, off, p - q.addr, f.name, fieldoffset})
+		fieldname := f.name
+		if idx >= 0 {
+			fieldname = fmt.Sprintf("%d.%s", idx, fieldname)
+		}
+		edges = append(edges, Edge{q, off, p - q.addr, fieldname, fieldoffset})
 	}
 	return edges
 }
 
-func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, offset uint64) []Edge {
+func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, offset uint64, idx int64) []Edge {
 	for _, f := range fields {
 		off := offset + f.offset
 		switch f.kind {
 		case fieldKindPtr:
-			edges = info.appendEdge(edges, data, off, f)
+			edges = info.appendEdge(edges, data, off, f, idx)
 		case fieldKindString:
-			edges = info.appendEdge(edges, data, off, f)
+			edges = info.appendEdge(edges, data, off, f, idx)
 		case fieldKindSlice:
-			edges = info.appendEdge(edges, data, off, f)
+			edges = info.appendEdge(edges, data, off, f, idx)
 		case fieldKindEface:
-			edges = info.appendEdge(edges, data, off, f)
+			edges = info.appendEdge(edges, data, off, f, idx)
 			tp := readPtr(info.dump, data[off:])
 			if tp != 0 {
 				t := info.types[tp]
@@ -598,7 +604,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 					log.Fatal("can't find eface type")
 				}
 				if t.efaceptr {
-					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f)
+					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f, idx)
 				}
 			}
 		case fieldKindIface:
@@ -609,7 +615,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 					log.Fatal("can't find iface tab")
 				}
 				if t.ptr {
-					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f)
+					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f, idx)
 				}
 			}
 		}
@@ -617,7 +623,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 	return edges
 }
 
-// Names fields it can for better debugging output
+// Names the fields it can for better debugging output
 func naming(d *Dump, execname string) {
 	w := getDwarf(execname)
 
@@ -628,6 +634,9 @@ func naming(d *Dump, execname string) {
 		for i, f := range r.fields {
 			off := uint64(len(r.data)) - f.offset
 			a, v := h.Lookup(off)
+			if v == nil {
+				continue
+			}
 			if a == off {
 				r.fields[i].name = v.(string)
 			} else {
@@ -655,7 +664,6 @@ func naming(d *Dump, execname string) {
 			}
 		}
 	}
-	_ = structs
 }
 
 func link(d *Dump, execname string) { // TODO: remove execname
@@ -699,9 +707,9 @@ func link(d *Dump, execname string) { // TODO: remove execname
 		}
 	}
 
-	// link frames to objects
-	for _, r := range d.frames {
-		r.edges = info.appendFields(r.edges, r.data, r.fields, 0)
+	// link stack frames to objects
+	for _, f := range d.frames {
+		f.edges = info.appendFields(f.edges, f.data, f.fields, 0, -1)
 	}
 
 	// link up frames in sequence
@@ -753,14 +761,14 @@ func link(d *Dump, execname string) { // TODO: remove execname
 		}
 		switch x.kind {
 		case typeKindObject:
-			x.edges = info.appendFields(x.edges, x.data, t.fields, 0)
+			x.edges = info.appendFields(x.edges, x.data, t.fields, 0, -1)
 		case typeKindArray:
 			for i := uint64(0); i <= uint64(len(x.data))-t.size; i += t.size {
-				x.edges = info.appendFields(x.edges, x.data, t.fields, i)
+				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i / t.size))
 			}
 		case typeKindChan:
 			for i := d.hChanSize; i <= uint64(len(x.data))-t.size; i += t.size {
-				x.edges = info.appendFields(x.edges, x.data, t.fields, i)
+				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i / t.size))
 			}
 		}
 	}
