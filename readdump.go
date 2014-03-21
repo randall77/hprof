@@ -33,7 +33,6 @@ const (
 
 	tagObject     = 1
 	tagEOF        = 3
-	tagDataRoot   = 5
 	tagOtherRoot  = 6
 	tagType       = 7
 	tagGoRoutine  = 8
@@ -44,6 +43,8 @@ const (
 	tagOSThread   = 13
 	tagMemStats   = 14
 	tagQFinal     = 15
+	tagData       = 16
+	tagBss        = 17
 
 	// DWARF constants
 	dw_op_call_frame_cfa = 156
@@ -65,13 +66,14 @@ type Dump struct {
 	objects    []*Object
 	frames     []*StackFrame
 	goroutines []*GoRoutine
-	dataroots  []*DataRoot
 	otherroots []*OtherRoot
-	finalizers []*Finalizer // pending finalizers, object still live
+	finalizers []*Finalizer  // pending finalizers, object still live
 	qfinal     []*QFinalizer // finalizers which are ready to run
 	itabs      []*Itab
 	osthreads  []*OSThread
 	memstats   *runtime.MemStats
+	data       *Data
+	bss        *Data
 }
 
 // An edge is a directed connection between two objects.  The source
@@ -97,13 +99,6 @@ type Object struct {
 	typaddr uint64
 }
 
-type DataRoot struct {
-	name string // name of global variable
-	e    Edge
-
-	fromaddr uint64
-	toaddr   uint64
-}
 type OtherRoot struct {
 	description string
 	e           Edge
@@ -122,12 +117,19 @@ type Finalizer struct {
 
 // Finalizer that's ready to run
 type QFinalizer struct {
-	obj  uint64
-	fn   uint64 // function to be run (a FuncVal*)
-	code uint64 // code ptr (fn->fn)
-	fint uint64 // type of function argument
-	ot   uint64 // type of object
+	obj   uint64
+	fn    uint64 // function to be run (a FuncVal*)
+	code  uint64 // code ptr (fn->fn)
+	fint  uint64 // type of function argument
+	ot    uint64 // type of object
 	edges []Edge
+}
+
+type Data struct {
+	addr   uint64
+	data   []byte
+	fields []Field
+	edges  []Edge
 }
 
 // For the given itab value, is the corresponding
@@ -178,9 +180,8 @@ type GoRoutine struct {
 }
 
 type StackFrame struct {
-	name   string
-	parent *StackFrame
-	// TODO: child, so we can figure out names for our outargs section
+	name      string
+	parent    *StackFrame
 	goroutine *GoRoutine
 	depth     uint64
 	data      []byte
@@ -231,6 +232,17 @@ func readBool(r io.ByteReader) bool {
 	return b != 0
 }
 
+func readFields(r io.ByteReader) []Field {
+	var x []Field
+	for {
+		kind := fieldKind(readUint64(r))
+		if kind == fieldKindEol {
+			return x
+		}
+		x = append(x, Field{kind: kind, offset: readUint64(r)})
+	}
+}
+
 // Reads heap dump into memory.
 func rawRead(filename string) *Dump {
 	file, err := os.Open(filename)
@@ -261,11 +273,6 @@ func rawRead(filename string) *Dump {
 			d.objects = append(d.objects, obj)
 		case tagEOF:
 			return &d
-		case tagDataRoot:
-			t := &DataRoot{}
-			t.fromaddr = readUint64(r)
-			t.toaddr = readUint64(r)
-			d.dataroots = append(d.dataroots, t)
 		case tagOtherRoot:
 			t := &OtherRoot{}
 			t.description = readString(r)
@@ -277,13 +284,7 @@ func rawRead(filename string) *Dump {
 			typ.size = readUint64(r)
 			typ.name = readString(r)
 			typ.efaceptr = readBool(r)
-			for {
-				kind := fieldKind(readUint64(r))
-				if kind == fieldKindEol {
-					break
-				}
-				typ.fields = append(typ.fields, Field{kind, readUint64(r), ""})
-			}
+			typ.fields = readFields(r)
 			d.types = append(d.types, typ)
 		case tagGoRoutine:
 			g := &GoRoutine{}
@@ -308,13 +309,7 @@ func rawRead(filename string) *Dump {
 			t.entry = readUint64(r)
 			t.pc = readUint64(r)
 			t.name = readString(r)
-			for {
-				kind := fieldKind(readUint64(r))
-				if kind == fieldKindEol {
-					break
-				}
-				t.fields = append(t.fields, Field{kind, readUint64(r), ""})
-			}
+			t.fields = readFields(r)
 			d.frames = append(d.frames, t)
 		case tagParams:
 			if readUint64(r) == 0 {
@@ -345,6 +340,18 @@ func rawRead(filename string) *Dump {
 			t.fint = readUint64(r)
 			t.ot = readUint64(r)
 			d.qfinal = append(d.qfinal, t)
+		case tagData:
+			t := &Data{}
+			t.addr = readUint64(r)
+			t.data = readBytes(r)
+			t.fields = readFields(r)
+			d.data = t
+		case tagBss:
+			t := &Data{}
+			t.addr = readUint64(r)
+			t.data = readBytes(r)
+			t.fields = readFields(r)
+			d.bss = t
 		case tagItab:
 			t := &Itab{}
 			t.addr = readUint64(r)
@@ -609,8 +616,8 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 	for _, f := range fields {
 		off := offset + f.offset
 		if off >= uint64(len(data)) {
-		       // TODO: what the heck is this?
-		       continue
+			// TODO: what the heck is this?
+			continue
 		}
 		switch f.kind {
 		case fieldKindPtr:
@@ -688,6 +695,22 @@ func naming(d *Dump, execname string) {
 			}
 		}
 	}
+
+	// naming for globals
+	globals := globalMap(d, w)
+	for _, x := range []*Data{d.data, d.bss} {
+		for i, f := range x.fields {
+			a, g := globals.Lookup(x.addr + f.offset)
+			if g != nil {
+				x.fields[i].name = g.(string)
+			} else {
+				x.fields[i].name = "unknown global"
+			}
+			if a != x.addr+f.offset {
+				x.fields[i].name = fmt.Sprintf("%s:%d", x.fields[i].name, a-(x.addr+f.offset))
+			}
+		}
+	}
 }
 
 func link(d *Dump, execname string) { // TODO: remove execname
@@ -760,18 +783,14 @@ func link(d *Dump, execname string) { // TODO: remove execname
 		}
 	}
 
-	for _, r := range d.dataroots {
-		a, g := globals.Lookup(r.fromaddr)
-		if g != nil {
-			r.name = g.(string)
-		} else {
-			r.name = "unknown global"
-		}
-		x := info.findObj(r.toaddr)
-		if x != nil {
-			r.e = Edge{x, r.fromaddr - a, r.toaddr - x.addr, "", 0}
+	// link data roots
+	for _, x := range []*Data{d.data, d.bss} {
+		for _, f := range x.fields {
+			x.edges = info.appendEdge(x.edges, x.data, f.offset, f, -1)
 		}
 	}
+
+	// link other roots
 	for _, r := range d.otherroots {
 		x := info.findObj(r.toaddr)
 		if x != nil {

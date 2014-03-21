@@ -22,6 +22,16 @@ func main() {
 			}
 		}
 	}
+	for _, x := range []*Data{d.data, d.bss} {
+	    for _, e := range x.edges {
+		if e.to != nil {
+			if _, ok := reachable[e.to]; !ok {
+				reachable[e.to] = struct{}{}
+				q = append(q, e.to)
+			}
+}
+}
+}
 	for _, r := range d.dataroots {
 		if r.e.to != nil {
 			if _, ok := reachable[r.e.to]; !ok {
@@ -136,20 +146,18 @@ func main() {
 			}
 		}
 	}
-	for _, r := range d.dataroots {
-		e := r.e
+	for _, x := range []*Data{d.data, d.bss} {
+	    for _, e := range x.edges {
 		if e.to != nil {
-			var taillabel, headlabel string
-			if r.e.fromoffset != 0 {
-				taillabel = fmt.Sprintf(" [taillabel=\"%d\"]", e.fromoffset)
-			}
+			var headlabel string
 			if e.tooffset != 0 {
 				headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.tooffset)
 			}
-			fmt.Printf("  \"%s\" [shape=diamond];\n", r.name)
-			fmt.Printf("  \"%s\" -> v%x%s%s;\n", r.name, e.to.addr, taillabel, headlabel)
+			fmt.Printf("  \"%s\" [shape=diamond];\n", e.fieldname)
+			fmt.Printf("  \"%s\" -> v%x%s;\n", e.fieldname, e.to.addr, headlabel)
 		}
 	}
+}
 	for _, r := range d.otherroots {
 		e := r.e
 		if e.to != nil {
