@@ -10,9 +10,9 @@ import (
 	"io"
 	"log"
 	"os"
-	"runtime"
 	"regexp"
-	"fmt"
+	"runtime"
+	//"fmt"
 )
 
 type fieldKind int
@@ -24,6 +24,7 @@ const (
 	fieldKindSlice            = 2
 	fieldKindIface            = 3
 	fieldKindEface            = 4
+	fieldKindEol              = 5
 
 	typeKindObject typeKind = 0
 	typeKindArray           = 1
@@ -31,7 +32,6 @@ const (
 
 	tagObject     = 1
 	tagEOF        = 3
-	tagStackRoot  = 4
 	tagDataRoot   = 5
 	tagOtherRoot  = 6
 	tagType       = 7
@@ -63,7 +63,6 @@ type Dump struct {
 	objects    []*Object
 	frames     []*StackFrame
 	goroutines []*GoRoutine
-	stackroots []*StackRoot
 	dataroots  []*DataRoot
 	otherroots []*OtherRoot
 	finalizers []*Finalizer
@@ -95,19 +94,6 @@ type Object struct {
 	typaddr uint64
 }
 
-type StackRoot struct {
-	frame *StackFrame
-	e     Edge
-
-	// name of stack variable / offset within variable, if known
-	name  string
-	offset uint64
-
-	fromaddr  uint64
-	toaddr    uint64
-	frameaddr uint64
-	depth     uint64
-}
 type DataRoot struct {
 	name string // name of global variable
 	e    Edge
@@ -178,16 +164,18 @@ type GoRoutine struct {
 }
 
 type StackFrame struct {
-	name      string
-	parent    *StackFrame
+	name   string
+	parent *StackFrame
 	// TODO: child, so we can figure out names for our outargs section
 	goroutine *GoRoutine
 	depth     uint64
+	data      []byte
+	edges     []Edge
 
-	addr       uint64
-	parentaddr uint64
-	entry      uint64
-	pc         uint64
+	addr   uint64
+	entry  uint64
+	pc     uint64
+	fields []Field
 }
 
 func readUint64(r io.ByteReader) uint64 {
@@ -200,6 +188,7 @@ func readUint64(r io.ByteReader) uint64 {
 
 func readNBytes(r io.ByteReader, n uint64) []byte {
 	s := make([]byte, n)
+	// TODO: faster
 	for i := range s {
 		b, err := r.ReadByte()
 		if err != nil {
@@ -210,9 +199,13 @@ func readNBytes(r io.ByteReader, n uint64) []byte {
 	return s
 }
 
-func readString(r io.ByteReader) string {
+func readBytes(r io.ByteReader) []byte {
 	n := readUint64(r)
-	return string(readNBytes(r, n))
+	return readNBytes(r, n)
+}
+
+func readString(r io.ByteReader) string {
+	return string(readBytes(r))
 }
 
 func readBool(r io.ByteReader) bool {
@@ -249,18 +242,10 @@ func rawRead(filename string) *Dump {
 			obj.addr = readUint64(r)
 			obj.typaddr = readUint64(r)
 			obj.kind = typeKind(readUint64(r))
-			size := readUint64(r)
-			obj.data = readNBytes(r, size)
+			obj.data = readBytes(r)
 			d.objects = append(d.objects, obj)
 		case tagEOF:
 			return &d
-		case tagStackRoot:
-			t := &StackRoot{}
-			t.fromaddr = readUint64(r)
-			t.toaddr = readUint64(r)
-			t.frameaddr = readUint64(r)
-			t.depth = readUint64(r)
-			d.stackroots = append(d.stackroots, t)
 		case tagDataRoot:
 			t := &DataRoot{}
 			t.fromaddr = readUint64(r)
@@ -277,11 +262,12 @@ func rawRead(filename string) *Dump {
 			typ.size = readUint64(r)
 			typ.name = readString(r)
 			typ.efaceptr = readBool(r)
-			nptr := readUint64(r)
-			typ.fields = make([]Field, nptr)
-			for i := uint64(0); i < nptr; i++ {
-				typ.fields[i].kind = fieldKind(readUint64(r))
-				typ.fields[i].offset = readUint64(r)
+			for {
+				kind := fieldKind(readUint64(r))
+				if kind == fieldKindEol {
+					break
+				}
+				typ.fields = append(typ.fields, Field{kind, readUint64(r)})
 			}
 			d.types = append(d.types, typ)
 		case tagGoRoutine:
@@ -302,11 +288,17 @@ func rawRead(filename string) *Dump {
 			t := &StackFrame{}
 			t.addr = readUint64(r)
 			t.depth = readUint64(r)
-			t.parentaddr = readUint64(r)
+			t.data = readBytes(r)
 			t.entry = readUint64(r)
 			t.pc = readUint64(r)
 			t.name = readString(r)
-			readString(r) // raw frame data
+			for {
+				kind := fieldKind(readUint64(r))
+				if kind == fieldKindEol {
+					break
+				}
+				t.fields = append(t.fields, Field{kind, readUint64(r)})
+			}
 			d.frames = append(d.frames, t)
 		case tagParams:
 			if readUint64(r) == 0 {
@@ -412,12 +404,12 @@ func readUleb(b []byte) ([]byte, uint64) {
 	for {
 		x := b[0]
 		b = b[1:]
-		r |= uint64(x & 127) << s
-		if x & 128 == 0 {
+		r |= uint64(x&127) << s
+		if x&128 == 0 {
 			break
 		}
 		s += 7
-		
+
 	}
 	return b, r
 }
@@ -425,7 +417,7 @@ func readSleb(b []byte) ([]byte, int64) {
 	c, v := readUleb(b)
 	// sign extend
 	k := (len(b) - len(c)) * 7
-	return c, int64(v) << uint(64 - k) >> uint(64 - k)
+	return c, int64(v) << uint(64-k) >> uint(64-k)
 }
 
 func globalMap(d *Dump, w *dwarf.Data) *Heap {
@@ -479,7 +471,7 @@ func localsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 				if len(loc) == 1 {
 					offset = 0
 				} else if len(loc) >= 3 && loc[1] == dw_op_consts && loc[len(loc)-1] == dw_op_plus {
-					loc, offset = readSleb(loc[2:len(loc)-1])
+					loc, offset = readSleb(loc[2 : len(loc)-1])
 					if len(loc) != 0 {
 						break
 					}
@@ -490,6 +482,7 @@ func localsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	}
 	return m
 }
+
 // argsMap returns a map from function name to a *Heap.  The heap
 // contains pairs (x,y) where x is the distance above parentaddr of
 // the start of that variable, and y is the name of the variable.
@@ -521,7 +514,7 @@ func structsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 				if len(loc) == 0 {
 					offset = 0
 				} else if len(loc) >= 2 && loc[0] == dw_op_consts && loc[len(loc)-1] == dw_op_plus {
-					loc, offset = readSleb(loc[1:len(loc)-1])
+					loc, offset = readSleb(loc[1 : len(loc)-1])
 					if len(loc) != 0 {
 						break
 					}
@@ -559,7 +552,7 @@ func (info *LinkInfo) findObj(addr uint64) *Object {
 		return nil
 	}
 	x := xi.(*Object)
-	if addr >= x.addr + uint64(len(x.data)) {
+	if addr >= x.addr+uint64(len(x.data)) {
 		return nil
 	}
 	return x
@@ -567,64 +560,69 @@ func (info *LinkInfo) findObj(addr uint64) *Object {
 
 var adjMap = regexp.MustCompile(`map.hdr\[(.*)\](.*)`)
 
-func (info *LinkInfo) linkPtr(x *Object, off uint64) {
-	p := readPtr(info.dump, x.data[off:])
+// appendEdge might add an edge to edges.  Returns new edges.
+//   Requires data[off:] be a pointer
+//   Adds an edge if that pointer points to a valid object.
+func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64) []Edge {
+	p := readPtr(info.dump, data[off:])
 	q := info.findObj(p)
 	if q != nil {
 		var fieldname string
 		var fieldoffset uint64
-		name := x.typ.name
-		s := adjMap.FindStringSubmatch(name)
-		if s != nil {
-			name = fmt.Sprintf("hash<%s,%s>", s[1], s[2])
-		}
-		h := info.structs[name]
-		if h != nil {
-			a, v := h.Lookup(off)
-			if v != nil {
-				fieldname = v.(string)
-				fieldoffset = off - a
-			}
-		}
-		x.edges = append(x.edges, Edge{q, off, p - q.addr, fieldname, fieldoffset})
+		// name := x.typ.name
+		// s := adjMap.FindStringSubmatch(name)
+		// if s != nil {
+		// 	name = fmt.Sprintf("hash<%s,%s>", s[1], s[2])
+		// }
+		// h := info.structs[name]
+		// if h != nil {
+		// 	a, v := h.Lookup(off)
+		// 	if v != nil {
+		// 		fieldname = v.(string)
+		// 		fieldoffset = off - a
+		// 	}
+		// }
+		edges = append(edges, Edge{q, off, p - q.addr, fieldname, fieldoffset})
 	}
+	return edges
 }
 
-func (info *LinkInfo) linkFields(x *Object, fields []Field, offset uint64) {
+func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, offset uint64) []Edge {
 	for _, f := range fields {
 		off := offset + f.offset
 		switch f.kind {
 		case fieldKindPtr:
-			info.linkPtr(x, off)
+			edges = info.appendEdge(edges, data, off)
 		case fieldKindString:
-			info.linkPtr(x, off)
+			edges = info.appendEdge(edges, data, off)
 		case fieldKindSlice:
-			info.linkPtr(x, off)
+			edges = info.appendEdge(edges, data, off)
 		case fieldKindEface:
-			info.linkPtr(x, off)
-			tp := readPtr(info.dump, x.data[off:])
+			edges = info.appendEdge(edges, data, off)
+			tp := readPtr(info.dump, data[off:])
 			if tp != 0 {
 				t := info.types[tp]
 				if t == nil {
 					log.Fatal("can't find eface type")
 				}
 				if t.efaceptr {
-					info.linkPtr(x, off+info.dump.ptrSize)
+					edges = info.appendEdge(edges, data, off+info.dump.ptrSize)
 				}
 			}
 		case fieldKindIface:
-			tp := readPtr(info.dump, x.data[off:])
+			tp := readPtr(info.dump, data[off:])
 			if tp != 0 {
 				t := info.itabs[tp]
 				if t == nil {
 					log.Fatal("can't find iface tab")
 				}
 				if t.ptr {
-					info.linkPtr(x, off+info.dump.ptrSize)
+					edges = info.appendEdge(edges, data, off+info.dump.ptrSize)
 				}
 			}
 		}
 	}
+	return edges
 }
 
 func link(d *Dump, execname string) {
@@ -673,9 +671,14 @@ func link(d *Dump, execname string) {
 		}
 	}
 
+	// link frames to objects
+	for _, r := range d.frames {
+		r.edges = info.appendFields(r.edges, r.data, r.fields, 0)
+	}
+
 	// link up frames in sequence
 	for _, f := range d.frames {
-		f.parent = info.frames[frameKey{f.parentaddr, f.depth + 1}]
+		f.parent = info.frames[frameKey{f.addr + uint64(len(f.data)), f.depth + 1}]
 		// NOTE: the base frame of the stack (runtime.goexit usually)
 		// will fail the lookup here and set a nil pointer.
 	}
@@ -695,21 +698,6 @@ func link(d *Dump, execname string) {
 		}
 	}
 
-	// link up roots to objects
-	for _, r := range d.stackroots {
-		r.frame = info.frames[frameKey{r.frameaddr, r.depth}]
-		x := info.findObj(r.toaddr)
-		if x != nil {
-			r.e = Edge{x, r.fromaddr - r.frameaddr, r.toaddr - x.addr, "", 0}
-		}
-		// find name of this root
-		offset := r.frame.parentaddr - r.fromaddr
-		a, n := info.locals[r.frame.name].Lookup(offset)
-		if n != nil {
-			r.name = n.(string)
-			r.offset = offset - a
-		}
-	}
 	for _, r := range d.dataroots {
 		a, g := info.globals.Lookup(r.fromaddr)
 		if g != nil {
@@ -737,14 +725,14 @@ func link(d *Dump, execname string) {
 		}
 		switch x.kind {
 		case typeKindObject:
-			info.linkFields(x, t.fields, 0)
+			x.edges = info.appendFields(x.edges, x.data, t.fields, 0)
 		case typeKindArray:
 			for i := uint64(0); i <= uint64(len(x.data))-t.size; i += t.size {
-				info.linkFields(x, t.fields, i)
+				x.edges = info.appendFields(x.edges, x.data, t.fields, i)
 			}
 		case typeKindChan:
 			for i := d.hChanSize; i <= uint64(len(x.data))-t.size; i += t.size {
-				info.linkFields(x, t.fields, i)
+				x.edges = info.appendFields(x.edges, x.data, t.fields, i)
 			}
 		}
 	}
@@ -764,6 +752,7 @@ func link(d *Dump, execname string) {
 
 func Read(dumpname, execname string) *Dump {
 	d := rawRead(dumpname)
+	// TODO: name fields
 	link(d, execname)
 	return d
 }

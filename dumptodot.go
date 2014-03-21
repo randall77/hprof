@@ -14,11 +14,13 @@ func main() {
 	// TODO: have reader do this?
 	reachable := map[*Object]struct{}{}
 	var q []*Object
-	for _, r := range d.stackroots {
-		if r.e.to != nil {
-			if _, ok := reachable[r.e.to]; !ok {
-				reachable[r.e.to] = struct{}{}
-				q = append(q, r.e.to)
+	for _, f := range d.frames {
+		for _, e := range f.edges {
+			if e.to != nil {
+				if _, ok := reachable[e.to]; !ok {
+					reachable[e.to] = struct{}{}
+					q = append(q, e.to)
+				}
 			}
 		}
 	}
@@ -97,35 +99,37 @@ func main() {
 	}
 
 	// goroutines and stacks
-	for _, f := range d.frames {
-		fmt.Printf("  v%x [label=\"%s\\n%d\" shape=rectangle];\n", f.addr, f.name, f.parentaddr-f.addr)
-		if f.parent != nil {
-			fmt.Printf("  v%x -> v%x;\n", f.addr, f.parent.addr)
-		}
-	}
 	for _, t := range d.goroutines {
 		fmt.Printf("  \"goroutines\" [shape=diamond];\n")
-		fmt.Printf("  \"goroutines\" -> v%x;\n", t.tos.addr)
+		fmt.Printf("  \"goroutines\" -> v%x_0;\n", t.tos.addr)
 	}
 
-	// roots
-	for _, r := range d.stackroots {
-		e := r.e
-		if e.to != nil {
-			var taillabel, headlabel string
-			if r.name != "" {
-				if r.offset == 0 {
-					taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", r.name)
-				} else {
-					taillabel = fmt.Sprintf(" [taillabel=\"%s:%d\"]", r.name, r.offset)
+	// stack frames
+	for _, f := range d.frames {
+		fmt.Printf("  v%x_%d [label=\"%s\\n%d\" shape=rectangle];\n", f.addr, f.depth, f.name, len(f.data))
+		if f.parent != nil {
+			fmt.Printf("  v%x_%d -> v%x_%d;\n", f.addr, f.depth, f.parent.addr, f.parent.depth)
+		}
+		for _, e := range f.edges {
+			if e.to != nil {
+				var taillabel, headlabel string
+				/*
+					if r.name != "" {
+						if r.offset == 0 {
+							taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", r.name)
+						} else {
+							taillabel = fmt.Sprintf(" [taillabel=\"%s:%d\"]", r.name, r.offset)
+						}
+				*/
+				if false {
+				} else if e.fromoffset != 0 {
+					taillabel = fmt.Sprintf(" [taillabel=\"%d\"]", e.fromoffset)
 				}
-			} else if e.fromoffset != 0 {
-				taillabel = fmt.Sprintf(" [taillabel=\"%d\"]", e.fromoffset)
+				if e.tooffset != 0 {
+					headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.tooffset)
+				}
+				fmt.Printf("  v%x_%d -> v%x%s%s;\n", f.addr, f.depth, e.to.addr, taillabel, headlabel)
 			}
-			if e.tooffset != 0 {
-				headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.tooffset)
-			}
-			fmt.Printf("  v%x -> v%x%s%s;\n", r.frame.addr, e.to.addr, taillabel, headlabel)
 		}
 	}
 	for _, r := range d.dataroots {
