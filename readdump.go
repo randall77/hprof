@@ -45,6 +45,8 @@ const (
 	tagQFinal     = 15
 	tagData       = 16
 	tagBss        = 17
+	tagDefer      = 18
+	tagPanic      = 19
 
 	// DWARF constants
 	dw_op_call_frame_cfa = 156
@@ -74,6 +76,8 @@ type Dump struct {
 	memstats   *runtime.MemStats
 	data       *Data
 	bss        *Data
+	defers     []*Defer
+	panics     []*Panic
 }
 
 // An edge is a directed connection between two objects.  The source
@@ -123,6 +127,25 @@ type QFinalizer struct {
 	fint  uint64 // type of function argument
 	ot    uint64 // type of object
 	edges []Edge
+}
+
+type Defer struct {
+	addr uint64
+	gp   uint64
+	argp uint64
+	pc   uint64
+	fn   uint64
+	code uint64
+	link uint64
+}
+
+type Panic struct {
+	addr uint64
+	gp   uint64
+	typ  uint64
+	data uint64
+	defr uint64
+	link uint64
 }
 
 type Data struct {
@@ -177,6 +200,8 @@ type GoRoutine struct {
 	waitreason   string
 	ctxtaddr     uint64
 	maddr        uint64
+	deferaddr    uint64
+	panicaddr    uint64
 }
 
 type StackFrame struct {
@@ -299,6 +324,8 @@ func rawRead(filename string) *Dump {
 			g.waitreason = readString(r)
 			g.ctxtaddr = readUint64(r)
 			g.maddr = readUint64(r)
+			g.deferaddr = readUint64(r)
+			g.panicaddr = readUint64(r)
 			d.goroutines = append(d.goroutines, g)
 		case tagStackFrame:
 			t := &StackFrame{}
@@ -394,6 +421,25 @@ func rawRead(filename string) *Dump {
 			}
 			t.NumGC = uint32(readUint64(r))
 			d.memstats = t
+		case tagDefer:
+			t := &Defer{}
+			t.addr = readUint64(r)
+			t.gp = readUint64(r)
+			t.argp = readUint64(r)
+			t.pc = readUint64(r)
+			t.fn = readUint64(r)
+			t.code = readUint64(r)
+			t.link = readUint64(r)
+			d.defers = append(d.defers, t)
+		case tagPanic:
+			t := &Panic{}
+			t.addr = readUint64(r)
+			t.gp = readUint64(r)
+			t.typ = readUint64(r)
+			t.data = readUint64(r)
+			t.defr = readUint64(r)
+			t.link = readUint64(r)
+			d.panics = append(d.panics, t)
 		default:
 			log.Fatal("unknown record kind %d", kind)
 		}
@@ -662,6 +708,9 @@ func namefields(d *Dump, execname string) {
 	locals := localsMap(d, w)
 	for _, r := range d.frames {
 		h := locals[r.name]
+		if h == nil {
+			continue
+		}
 		for i, f := range r.fields {
 			off := uint64(len(r.data)) - f.offset
 			a, v := h.Lookup(off)
@@ -671,7 +720,7 @@ func namefields(d *Dump, execname string) {
 			if a == off {
 				r.fields[i].name = v.(string)
 			} else {
-				r.fields[i].name = fmt.Sprintf("%s:%d", v, off - a)
+				r.fields[i].name = fmt.Sprintf("%s:%d", v, off-a)
 			}
 		}
 	}
@@ -708,7 +757,7 @@ func namefields(d *Dump, execname string) {
 				x.fields[i].name = "unknown global"
 			}
 			if a != addr {
-				x.fields[i].name = fmt.Sprintf("%s:%d", x.fields[i].name, addr - a)
+				x.fields[i].name = fmt.Sprintf("%s:%d", x.fields[i].name, addr-a)
 			}
 		}
 	}
