@@ -23,20 +23,12 @@ func main() {
 		}
 	}
 	for _, x := range []*Data{d.data, d.bss} {
-	    for _, e := range x.edges {
-		if e.to != nil {
-			if _, ok := reachable[e.to]; !ok {
-				reachable[e.to] = struct{}{}
-				q = append(q, e.to)
-			}
-}
-}
-}
-	for _, r := range d.dataroots {
-		if r.e.to != nil {
-			if _, ok := reachable[r.e.to]; !ok {
-				reachable[r.e.to] = struct{}{}
-				q = append(q, r.e.to)
+		for _, e := range x.edges {
+			if e.to != nil {
+				if _, ok := reachable[e.to]; !ok {
+					reachable[e.to] = struct{}{}
+					q = append(q, e.to)
+				}
 			}
 		}
 	}
@@ -147,17 +139,17 @@ func main() {
 		}
 	}
 	for _, x := range []*Data{d.data, d.bss} {
-	    for _, e := range x.edges {
-		if e.to != nil {
-			var headlabel string
-			if e.tooffset != 0 {
-				headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.tooffset)
+		for _, e := range x.edges {
+			if e.to != nil {
+				var headlabel string
+				if e.tooffset != 0 {
+					headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.tooffset)
+				}
+				fmt.Printf("  \"%s\" [shape=diamond];\n", e.fieldname)
+				fmt.Printf("  \"%s\" -> v%x%s;\n", e.fieldname, e.to.addr, headlabel)
 			}
-			fmt.Printf("  \"%s\" [shape=diamond];\n", e.fieldname)
-			fmt.Printf("  \"%s\" -> v%x%s;\n", e.fieldname, e.to.addr, headlabel)
 		}
 	}
-}
 	for _, r := range d.otherroots {
 		e := r.e
 		if e.to != nil {

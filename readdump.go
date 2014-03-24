@@ -598,21 +598,21 @@ func (info *LinkInfo) findObj(addr uint64) *Object {
 // appendEdge might add an edge to edges.  Returns new edges.
 //   Requires data[off:] be a pointer
 //   Adds an edge if that pointer points to a valid object.
-func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64, f Field, idx int64) []Edge {
+func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64, f Field, arrayidx int64) []Edge {
 	p := readPtr(info.dump, data[off:])
 	q := info.findObj(p)
 	if q != nil {
 		var fieldoffset uint64 // TODO
 		fieldname := f.name
-		if idx >= 0 {
-			fieldname = fmt.Sprintf("%d.%s", idx, fieldname)
+		if arrayidx >= 0 {
+			fieldname = fmt.Sprintf("%d.%s", arrayidx, fieldname)
 		}
 		edges = append(edges, Edge{q, off, p - q.addr, fieldname, fieldoffset})
 	}
 	return edges
 }
 
-func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, offset uint64, idx int64) []Edge {
+func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, offset uint64, arrayidx int64) []Edge {
 	for _, f := range fields {
 		off := offset + f.offset
 		if off >= uint64(len(data)) {
@@ -621,13 +621,13 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 		}
 		switch f.kind {
 		case fieldKindPtr:
-			edges = info.appendEdge(edges, data, off, f, idx)
+			edges = info.appendEdge(edges, data, off, f, arrayidx)
 		case fieldKindString:
-			edges = info.appendEdge(edges, data, off, f, idx)
+			edges = info.appendEdge(edges, data, off, f, arrayidx)
 		case fieldKindSlice:
-			edges = info.appendEdge(edges, data, off, f, idx)
+			edges = info.appendEdge(edges, data, off, f, arrayidx)
 		case fieldKindEface:
-			edges = info.appendEdge(edges, data, off, f, idx)
+			edges = info.appendEdge(edges, data, off, f, arrayidx)
 			tp := readPtr(info.dump, data[off:])
 			if tp != 0 {
 				t := info.types[tp]
@@ -635,7 +635,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 					log.Fatal("can't find eface type")
 				}
 				if t.efaceptr {
-					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f, idx)
+					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f, arrayidx)
 				}
 			}
 		case fieldKindIface:
@@ -646,7 +646,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 					log.Fatal("can't find iface tab")
 				}
 				if t.ptr {
-					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f, idx)
+					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f, arrayidx)
 				}
 			}
 		}
@@ -655,7 +655,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 }
 
 // Names the fields it can for better debugging output
-func naming(d *Dump, execname string) {
+func namefields(d *Dump, execname string) {
 	w := getDwarf(execname)
 
 	// name all frame variables
@@ -671,7 +671,7 @@ func naming(d *Dump, execname string) {
 			if a == off {
 				r.fields[i].name = v.(string)
 			} else {
-				r.fields[i].name = fmt.Sprintf("%s:%d", v, a-off)
+				r.fields[i].name = fmt.Sprintf("%s:%d", v, off - a)
 			}
 		}
 	}
@@ -700,20 +700,21 @@ func naming(d *Dump, execname string) {
 	globals := globalMap(d, w)
 	for _, x := range []*Data{d.data, d.bss} {
 		for i, f := range x.fields {
-			a, g := globals.Lookup(x.addr + f.offset)
+			addr := x.addr + f.offset
+			a, g := globals.Lookup(addr)
 			if g != nil {
 				x.fields[i].name = g.(string)
 			} else {
 				x.fields[i].name = "unknown global"
 			}
-			if a != x.addr+f.offset {
-				x.fields[i].name = fmt.Sprintf("%s:%d", x.fields[i].name, a-(x.addr+f.offset))
+			if a != addr {
+				x.fields[i].name = fmt.Sprintf("%s:%d", x.fields[i].name, addr - a)
 			}
 		}
 	}
 }
 
-func link(d *Dump, execname string) { // TODO: remove execname
+func link(d *Dump) {
 	// initialize some maps used for linking
 	var info LinkInfo
 	info.dump = d
@@ -731,10 +732,6 @@ func link(d *Dump, execname string) { // TODO: remove execname
 	for _, x := range d.frames {
 		frames[frameKey{x.addr, x.depth}] = x
 	}
-
-	// Binary-searchable map of global variables
-	w := getDwarf(execname)
-	globals := globalMap(d, w)
 
 	// Binary-searchable map of objects
 	info.objects = &Heap{}
@@ -785,9 +782,7 @@ func link(d *Dump, execname string) { // TODO: remove execname
 
 	// link data roots
 	for _, x := range []*Data{d.data, d.bss} {
-		for _, f := range x.fields {
-			x.edges = info.appendEdge(x.edges, x.data, f.offset, f, -1)
-		}
+		x.edges = info.appendFields(x.edges, x.data, x.fields, 0, -1)
 	}
 
 	// link other roots
@@ -844,8 +839,8 @@ func link(d *Dump, execname string) { // TODO: remove execname
 
 func Read(dumpname, execname string) *Dump {
 	d := rawRead(dumpname)
-	naming(d, execname)
-	link(d, execname)
+	namefields(d, execname)
+	link(d)
 	return d
 }
 
