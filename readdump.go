@@ -19,34 +19,34 @@ type fieldKind int
 type typeKind int
 
 const (
-	fieldKindPtr    fieldKind = 0
-	fieldKindString           = 1
-	fieldKindSlice            = 2
-	fieldKindIface            = 3
-	fieldKindEface            = 4
-	fieldKindEol              = 5
+	fieldKindEol    fieldKind = 0
+	fieldKindPtr              = 1
+	fieldKindString           = 2
+	fieldKindSlice            = 3
+	fieldKindIface            = 4
+	fieldKindEface            = 5
 
 	typeKindObject       typeKind = 0
 	typeKindArray                 = 1
 	typeKindChan                  = 2
 	typeKindConservative          = 127
 
+	tagEOF        = 0
 	tagObject     = 1
-	tagEOF        = 3
-	tagOtherRoot  = 6
-	tagType       = 7
-	tagGoRoutine  = 8
-	tagStackFrame = 9
-	tagParams     = 10
-	tagFinalizer  = 11
-	tagItab       = 12
-	tagOSThread   = 13
-	tagMemStats   = 14
-	tagQFinal     = 15
-	tagData       = 16
-	tagBss        = 17
-	tagDefer      = 18
-	tagPanic      = 19
+	tagOtherRoot  = 2
+	tagType       = 3
+	tagGoRoutine  = 4
+	tagStackFrame = 5
+	tagParams     = 6
+	tagFinalizer  = 7
+	tagItab       = 8
+	tagOSThread   = 9
+	tagMemStats   = 10
+	tagQFinal     = 11
+	tagData       = 12
+	tagBss        = 13
+	tagDefer      = 14
+	tagPanic      = 15
 
 	// DWARF constants
 	dw_op_call_frame_cfa = 156
