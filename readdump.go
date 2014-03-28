@@ -186,11 +186,11 @@ type Type struct {
 }
 
 type GoRoutine struct {
-	tos  *StackFrame // frame at the top of the stack (i.e. currently running)
+	bos  *StackFrame // frame at the top of the stack (i.e. currently running)
 	ctxt *Object
 
 	addr         uint64
-	tosaddr      uint64
+	bosaddr      uint64
 	goid         uint64
 	gopc         uint64
 	status       uint64
@@ -314,7 +314,7 @@ func rawRead(filename string) *Dump {
 		case tagGoRoutine:
 			g := &GoRoutine{}
 			g.addr = readUint64(r)
-			g.tosaddr = readUint64(r)
+			g.bosaddr = readUint64(r)
 			g.goid = readUint64(r)
 			g.gopc = readUint64(r)
 			g.status = readUint64(r)
@@ -816,11 +816,11 @@ func link(d *Dump) {
 
 	// link goroutines to frames & vice versa
 	for _, g := range d.goroutines {
-		g.tos = frames[frameKey{g.tosaddr, 0}]
-		if g.tos == nil {
-			log.Fatal("tos missing")
+		g.bos = frames[frameKey{g.bosaddr, 0}]
+		if g.bos == nil {
+			log.Fatal("bos missing")
 		}
-		for f := g.tos; f != nil; f = f.parent {
+		for f := g.bos; f != nil; f = f.parent {
 			f.goroutine = g
 		}
 		x := info.findObj(g.ctxtaddr)

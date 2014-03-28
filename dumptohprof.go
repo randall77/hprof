@@ -55,8 +55,8 @@ var dump []byte
 var stringCache map[string]uint64
 
 // map from threads to thread serial numbers
-var threadSerialNumbers map[*Thread]uint32
-var stackTraceSerialNumbers map[*Thread]uint32
+var threadSerialNumbers map[*GoRoutine]uint32
+var stackTraceSerialNumbers map[*GoRoutine]uint32
 
 func main() {
 	flag.Parse()
@@ -72,8 +72,8 @@ func main() {
 		usedIds[obj.addr] = struct{}{}
 	}
 	stringCache = make(map[string]uint64, 0)
-	threadSerialNumbers = make(map[*Thread]uint32, 0)
-	stackTraceSerialNumbers = make(map[*Thread]uint32, 0)
+	threadSerialNumbers = make(map[*GoRoutine]uint32, 0)
+	stackTraceSerialNumbers = make(map[*GoRoutine]uint32, 0)
 
 	// std header
 	hprof = append(hprof, []byte("JAVA PROFILE 1.0.1\x00")...)
@@ -168,9 +168,9 @@ func addThreads() {
 		addTag(0x04, body)
 	}
 
-	for _, t := range d.threads {
+	for _, t := range d.goroutines {
 		n := 0
-		for f := t.tos; f != nil; f = f.parent {
+		for f := t.bos; f != nil; f = f.parent {
 			n++
 		}
 
@@ -182,7 +182,7 @@ func addThreads() {
 		body = append32(body, sid)
 		body = append32(body, tid)
 		body = append32(body, uint32(n))
-		for f := t.tos; f != nil; f = f.parent {
+		for f := t.bos; f != nil; f = f.parent {
 			body = appendId(body, f.addr)
 		}
 		addTag(0x05, body)
@@ -488,31 +488,32 @@ func addHeapDump() {
 	}
 
 	// output threads
-	for _, t := range d.threads {
+	for _, t := range d.goroutines {
 		dump = append(dump, 0x08) // root thread object
 		dump = appendId(dump, t.addr)
 		dump = append32(dump, threadSerialNumbers[t])
 		dump = append32(dump, stackTraceSerialNumbers[t])
 	}
 
-	// output roots
-	for _, t := range d.stackroots {
-		if t.e.to == nil {
-			continue
-		}
+	// stack roots
+	for _, t := range d.goroutines {
+	for f := t.bos; f != nil; f = f.parent {
+	    for _, e := range f.edges {
 		dump = append(dump, 0x03) // root java frame
-		dump = appendId(dump, t.e.to.addr)
-		dump = append32(dump, threadSerialNumbers[t.frame.thread])
-		dump = append32(dump, uint32(t.frame.depth))
+		dump = appendId(dump, e.to.addr)
+		dump = append32(dump, threadSerialNumbers[t])
+		dump = append32(dump, uint32(f.depth))
 	}
-	for _, t := range d.dataroots {
-		if t.e.to == nil {
-			continue
-		}
+}
+}
+	// data roots
+	for _, x := range []*Data{d.data, d.bss} {
+	for _, e := range x.edges {
 		dump = append(dump, 0x01) // root jni global
-		dump = appendId(dump, t.e.to.addr)
-		dump = appendId(dump, t.fromaddr) // jni global ref id
+		dump = appendId(dump, e.to.addr)
+		dump = appendId(dump, x.addr + e.fromoffset) // jni global ref id
 	}
+}
 	for _, t := range d.otherroots {
 		if t.e.to == nil {
 			continue

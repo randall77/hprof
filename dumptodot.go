@@ -110,7 +110,7 @@ func main() {
 	// goroutines and stacks
 	for _, t := range d.goroutines {
 		fmt.Printf("  \"goroutines\" [shape=diamond];\n")
-		fmt.Printf("  \"goroutines\" -> v%x_0;\n", t.tos.addr)
+		fmt.Printf("  \"goroutines\" -> v%x_0;\n", t.bos.addr)
 	}
 
 	// stack frames
