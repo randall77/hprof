@@ -5,7 +5,7 @@ import (
 )
 
 // You put some (address,value) pairs in, then ask it about an
-// address.  It returns the object closest (address,value) pair below
+// address.  It returns the closest (address,value) pair below
 // or equal to that address.
 
 // TODO: this could really use generics

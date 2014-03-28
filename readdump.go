@@ -521,6 +521,227 @@ func globalMap(d *Dump, w *dwarf.Data) *Heap {
 	return h
 }
 
+type dwarfType interface {
+	// name of this type
+	Name() string
+	// size of type in bytes
+	Size() uint64
+	// Fields returns a map from the offset within the object to
+	// the name of the field at that offset.  Returns nil if
+	// there is a single unnamed field at offset 0.
+	Fields() map[uint64]string
+}
+type dwarfBaseType struct {
+	name string
+	size uint64
+}
+type dwarfBasicType struct {
+	dwarfBaseType
+	kind string
+}
+type dwarfTypedef struct {
+	dwarfBaseType
+	type_ dwarfType
+}
+type dwarfStructType struct {
+	dwarfBaseType
+	members []dwarfTypeMember
+	fields map[uint64]string
+}
+type dwarfTypeMember struct {
+	name string
+	offset uint64
+	type_ dwarfType
+}
+type dwarfPtrType struct {
+	dwarfBaseType
+	elem dwarfType
+}
+type dwarfArrayType struct {
+	dwarfBaseType
+	elem dwarfType
+	fields map[uint64]string
+}
+type dwarfFuncType struct {
+	dwarfBaseType
+}
+func (t *dwarfBaseType) Name() string {
+	return t.name
+}
+func (t *dwarfBaseType) Size() uint64 {
+	return t.size
+}
+func (t *dwarfBaseType) Fields() map[uint64]string {
+	return nil
+}
+func (t *dwarfTypedef) Fields() map[uint64]string {
+	return t.type_.Fields()
+}
+func (t *dwarfTypedef) Size() uint64 {
+	return t.type_.Size()
+}
+func (t *dwarfStructType) Fields() map[uint64]string {
+	if t.fields != nil {
+		return t.fields
+	}
+	t.fields = make(map[uint64]string)
+	for _, m := range t.members {
+		f := m.type_.Fields()
+		if f == nil {
+			t.fields[m.offset] = m.name
+		} else {
+			for k, v := range f {
+				t.fields[m.offset + k] = fmt.Sprintf("%s.%s", m.name, v)
+			}
+		}
+	}
+	return t.fields
+}
+func (t *dwarfArrayType) Fields() map[uint64]string {
+	if t.fields != nil {
+		return t.fields
+	}
+	t.fields = make(map[uint64]string)
+	f := t.elem.Fields()
+	e := t.elem.Size()
+	if e == 0 {
+		return t.fields
+	}
+	n := t.Size() / e
+	for i := uint64(0); i < n; i++ {
+		if f == nil {
+			t.fields[i * e] = fmt.Sprintf("[%d]", i)
+		} else {
+			for k, v := range f {
+				t.fields[i * e + k] = fmt.Sprintf("[%d].%s", i, v)
+			}
+		}
+	}
+	return t.fields
+}
+
+// Some type names in the dwarf info don't match the corresponding
+// type names in the binary.  We'll use the rewrites here to map
+// between the two.
+// TODO: just struct names for now.  Rename this?
+type adjTypeName struct {
+	matcher *regexp.Regexp
+	formatter string
+}
+var adjTypeNames = []adjTypeName{
+	{regexp.MustCompile(`hash<(.*),(.*)>`), "map.hdr[%s]%s"},
+	{regexp.MustCompile(`bucket<(.*),(.*)>`), "map.bucket[%s]%s"},
+}
+
+// load a map of all of the dwarf types
+func typeMap(d *Dump, w *dwarf.Data) map[string]dwarfType {
+	// temp map from dwarf IDs to our internal types
+	t := make(map[dwarf.Offset]dwarfType)
+
+	// pass 1: make a dwarfType for all of the types in the file
+	r := w.Reader()
+	for {
+		e, err := r.Next()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if e == nil {
+			break
+		}
+		switch e.Tag {
+		case dwarf.TagBaseType:
+			x := new(dwarfBaseType)
+			x.name = e.Val(dwarf.AttrName).(string)
+			x.size = uint64(e.Val(dwarf.AttrByteSize).(int64))
+			t[e.Offset] = x
+		case dwarf.TagPointerType:
+			x := new(dwarfPtrType)
+			x.name = e.Val(dwarf.AttrName).(string)
+			x.size = d.ptrSize
+			t[e.Offset] = x
+		case dwarf.TagStructType:
+			x := new(dwarfStructType)
+			x.name = e.Val(dwarf.AttrName).(string)
+			x.size = uint64(e.Val(dwarf.AttrByteSize).(int64))
+			for _, a := range adjTypeNames {
+				if k := a.matcher.FindStringSubmatch(x.name); k != nil {
+					var i []interface{}
+					for _, j := range k[1:] {
+						i = append(i, j)
+					}
+					x.name = fmt.Sprintf(a.formatter, i...)
+				}
+			}
+			t[e.Offset] = x
+		case dwarf.TagArrayType:
+			x := new(dwarfArrayType)
+			x.name = e.Val(dwarf.AttrName).(string)
+			x.size = uint64(e.Val(dwarf.AttrByteSize).(int64))
+			t[e.Offset] = x
+		case dwarf.TagTypedef:
+			x := new(dwarfTypedef)
+			x.name = e.Val(dwarf.AttrName).(string)
+			t[e.Offset] = x
+		case dwarf.TagSubroutineType:
+			x := new(dwarfFuncType)
+			x.name = e.Val(dwarf.AttrName).(string)
+			t[e.Offset] = x
+		}
+	}
+
+	// pass 2: fill in / link up the types
+	r = w.Reader()
+	var currentStruct *dwarfStructType
+	for {
+		e, err := r.Next()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if e == nil {
+			break
+		}
+		switch e.Tag {
+		case dwarf.TagTypedef:
+			t[e.Offset].(*dwarfTypedef).type_ = t[e.Val(dwarf.AttrType).(dwarf.Offset)]
+			if t[e.Offset].(*dwarfTypedef).type_ == nil {
+				log.Fatalf("can't find referent for %s %d\n", t[e.Offset].(*dwarfTypedef).name, e.Val(dwarf.AttrType).(dwarf.Offset))
+			}
+		case dwarf.TagPointerType:
+			i := e.Val(dwarf.AttrType)
+			if i != nil {
+				t[e.Offset].(*dwarfPtrType).elem = t[i.(dwarf.Offset)]
+			}
+			// The only nil cases are unsafe.Pointer and reflect.iword
+		case dwarf.TagArrayType:
+			t[e.Offset].(*dwarfArrayType).elem = t[e.Val(dwarf.AttrType).(dwarf.Offset)]
+		case dwarf.TagStructType:
+			currentStruct = t[e.Offset].(*dwarfStructType)
+		case dwarf.TagMember:
+			name := e.Val(dwarf.AttrName).(string)
+			type_ := t[e.Val(dwarf.AttrType).(dwarf.Offset)]
+			loc := e.Val(dwarf.AttrDataMemberLoc).([]uint8)
+			var offset uint64
+			if len(loc) == 0 {
+				offset = 0
+			} else if len(loc) >= 2 && loc[0] == dw_op_consts && loc[len(loc)-1] == dw_op_plus {
+				loc, offset = readUleb(loc[1 : len(loc)-1])
+				if len(loc) != 0 {
+					break
+				}
+			}
+			currentStruct.members = append(currentStruct.members, dwarfTypeMember{name, offset, type_})
+		}
+	}
+
+	// pass 4: make result map
+	m := make(map[string]dwarfType)
+	for _, x := range t {
+		m[x.Name()] = x
+		//fmt.Printf("%s %v\n", x.Name(), x.Fields())
+	}
+	return m
+}
+
 // localsMap returns a map from function name to a *Heap.  The heap
 // contains pairs (x,y) where x is the distance before the end of frame
 // of the start of that variable, and y is the name of the variable.
@@ -567,10 +788,6 @@ func argsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	return nil
 }
 
-// rewrites from dwarf-style type names to runtime-style type names
-var adjMapHdr = regexp.MustCompile(`hash<(.*),(.*)>`)
-var adjMapBucket = regexp.MustCompile(`bucket<(.*),(.*)>`)
-
 // maps from a type name to a heap of (offset/name) pairs for that struct.
 func structsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	m := make(map[string]*Heap, 0)
@@ -587,14 +804,6 @@ func structsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 		switch e.Tag {
 		case dwarf.TagStructType:
 			structname = e.Val(dwarf.AttrName).(string)
-			k := adjMapHdr.FindStringSubmatch(structname)
-			if k != nil {
-				structname = fmt.Sprintf("map.hdr[%s]%s", k[1], k[2])
-			}
-			k = adjMapBucket.FindStringSubmatch(structname)
-			if k != nil {
-				structname = fmt.Sprintf("map.bucket[%s]%s", k[1], k[2])
-			}
 			m[structname] = &Heap{}
 		case dwarf.TagMember:
 			name := e.Val(dwarf.AttrName).(string)
@@ -704,6 +913,9 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 func namefields(d *Dump, execname string) {
 	w := getDwarf(execname)
 
+	m := typeMap(d, w)
+	_ = m
+
 	// name all frame variables
 	locals := localsMap(d, w)
 	for _, r := range d.frames {
@@ -727,6 +939,7 @@ func namefields(d *Dump, execname string) {
 	// TODO: argsmap
 
 	// naming for struct fields
+	if false {
 	structs := structsMap(d, w)
 	for _, t := range d.types {
 		h := structs[t.name]
@@ -740,8 +953,18 @@ func namefields(d *Dump, execname string) {
 			} else if a == f.offset {
 				t.fields[i].name = v.(string)
 			} else {
-				t.fields[i].name = fmt.Sprintf("%s:%d", v, a-f.offset)
+				t.fields[i].name = fmt.Sprintf("%s:%d", v, f.offset-a)
 			}
+		}
+	}
+	}
+	for _, t := range d.types {
+		dt := m[t.name]
+		if dt == nil {
+			continue
+		}
+		for i, f := range t.fields {
+			t.fields[i].name = dt.Fields()[f.offset]
 		}
 	}
 
