@@ -1,11 +1,11 @@
 package main
 
 import (
-	"fmt"
-	"os"
-	"flag"
-	"log"
 	"encoding/binary"
+	"flag"
+	"fmt"
+	"log"
+	"os"
 )
 
 // set of all the object pointers in the file
@@ -332,10 +332,10 @@ func StdClass(t *Type, size uint64) uint64 {
 			// data fields might be pointers, might not be.  hprof has
 			// no good way to represent this.
 			case fieldKindIface:
-				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8].kind = 2   // Object
 				f[fld.offset/8+1].kind = 2 // Object
 			case fieldKindEface:
-				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8].kind = 2   // Object
 				f[fld.offset/8+1].kind = 2 // Object
 			}
 		}
@@ -368,16 +368,16 @@ func ArrayClass(t *Type, size uint64) uint64 {
 				f[i].name = "sizeclass_pad"
 			}
 		}
-		for i := uint64(0); i <= size - t.size; i += t.size {
+		for i := uint64(0); i <= size-t.size; i += t.size {
 			for _, fld := range t.fields {
 				switch fld.kind {
 				case fieldKindPtr:
 					f[(i+fld.offset)/8].kind = 2 // Object
 				case fieldKindIface:
-					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8].kind = 2   // Object
 					f[(i+fld.offset)/8+1].kind = 2 // Object
 				case fieldKindEface:
-					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8].kind = 2   // Object
 					f[(i+fld.offset)/8+1].kind = 2 // Object
 				}
 			}
@@ -412,16 +412,16 @@ func ChanClass(t *Type, size uint64) uint64 {
 				f[i].name = "sizeclass_pad"
 			}
 		}
-		for i := d.hChanSize; i <= size - t.size; i += t.size {
+		for i := d.hChanSize; i <= size-t.size; i += t.size {
 			for _, fld := range t.fields {
 				switch fld.kind {
 				case fieldKindPtr:
 					f[(i+fld.offset)/8].kind = 2 // Object
 				case fieldKindIface:
-					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8].kind = 2   // Object
 					f[(i+fld.offset)/8+1].kind = 2 // Object
 				case fieldKindEface:
-					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8].kind = 2   // Object
 					f[(i+fld.offset)/8+1].kind = 2 // Object
 				}
 			}
@@ -497,23 +497,23 @@ func addHeapDump() {
 
 	// stack roots
 	for _, t := range d.goroutines {
-	for f := t.bos; f != nil; f = f.parent {
-	    for _, e := range f.edges {
-		dump = append(dump, 0x03) // root java frame
-		dump = appendId(dump, e.to.addr)
-		dump = append32(dump, threadSerialNumbers[t])
-		dump = append32(dump, uint32(f.depth))
+		for f := t.bos; f != nil; f = f.parent {
+			for _, e := range f.edges {
+				dump = append(dump, 0x03) // root java frame
+				dump = appendId(dump, e.to.addr)
+				dump = append32(dump, threadSerialNumbers[t])
+				dump = append32(dump, uint32(f.depth))
+			}
+		}
 	}
-}
-}
 	// data roots
 	for _, x := range []*Data{d.data, d.bss} {
-	for _, e := range x.edges {
-		dump = append(dump, 0x01) // root jni global
-		dump = appendId(dump, e.to.addr)
-		dump = appendId(dump, x.addr + e.fromoffset) // jni global ref id
+		for _, e := range x.edges {
+			dump = append(dump, 0x01) // root jni global
+			dump = appendId(dump, e.to.addr)
+			dump = appendId(dump, x.addr+e.fromoffset) // jni global ref id
+		}
 	}
-}
 	for _, t := range d.otherroots {
 		if t.e.to == nil {
 			continue
@@ -538,6 +538,7 @@ func append64(b []byte, x uint64) []byte {
 func appendId(b []byte, x uint64) []byte {
 	return append64(b, x)
 }
+
 // TODO: works as long as all data is 8 bytes, but for <= 4 byte things this will
 // misattribute the data.
 func endianSwap(b []byte) {

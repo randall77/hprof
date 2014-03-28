@@ -546,12 +546,12 @@ type dwarfTypedef struct {
 type dwarfStructType struct {
 	dwarfBaseType
 	members []dwarfTypeMember
-	fields map[uint64]string
+	fields  map[uint64]string
 }
 type dwarfTypeMember struct {
-	name string
+	name   string
 	offset uint64
-	type_ dwarfType
+	type_  dwarfType
 }
 type dwarfPtrType struct {
 	dwarfBaseType
@@ -559,12 +559,13 @@ type dwarfPtrType struct {
 }
 type dwarfArrayType struct {
 	dwarfBaseType
-	elem dwarfType
+	elem   dwarfType
 	fields map[uint64]string
 }
 type dwarfFuncType struct {
 	dwarfBaseType
 }
+
 func (t *dwarfBaseType) Name() string {
 	return t.name
 }
@@ -591,7 +592,7 @@ func (t *dwarfStructType) Fields() map[uint64]string {
 			t.fields[m.offset] = m.name
 		} else {
 			for k, v := range f {
-				t.fields[m.offset + k] = fmt.Sprintf("%s.%s", m.name, v)
+				t.fields[m.offset+k] = fmt.Sprintf("%s.%s", m.name, v)
 			}
 		}
 	}
@@ -610,10 +611,10 @@ func (t *dwarfArrayType) Fields() map[uint64]string {
 	n := t.Size() / e
 	for i := uint64(0); i < n; i++ {
 		if f == nil {
-			t.fields[i * e] = fmt.Sprintf("[%d]", i)
+			t.fields[i*e] = fmt.Sprintf("[%d]", i)
 		} else {
 			for k, v := range f {
-				t.fields[i * e + k] = fmt.Sprintf("[%d].%s", i, v)
+				t.fields[i*e+k] = fmt.Sprintf("[%d].%s", i, v)
 			}
 		}
 	}
@@ -625,9 +626,10 @@ func (t *dwarfArrayType) Fields() map[uint64]string {
 // between the two.
 // TODO: just struct names for now.  Rename this?
 type adjTypeName struct {
-	matcher *regexp.Regexp
+	matcher   *regexp.Regexp
 	formatter string
 }
+
 var adjTypeNames = []adjTypeName{
 	{regexp.MustCompile(`hash<(.*),(.*)>`), "map.hdr[%s]%s"},
 	{regexp.MustCompile(`bucket<(.*),(.*)>`), "map.bucket[%s]%s"},
@@ -940,23 +942,23 @@ func namefields(d *Dump, execname string) {
 
 	// naming for struct fields
 	if false {
-	structs := structsMap(d, w)
-	for _, t := range d.types {
-		h := structs[t.name]
-		if h == nil {
-			continue
-		}
-		for i, f := range t.fields {
-			a, v := h.Lookup(f.offset)
-			if v == nil {
-				t.fields[i].name = fmt.Sprintf("unk%d", f.offset)
-			} else if a == f.offset {
-				t.fields[i].name = v.(string)
-			} else {
-				t.fields[i].name = fmt.Sprintf("%s:%d", v, f.offset-a)
+		structs := structsMap(d, w)
+		for _, t := range d.types {
+			h := structs[t.name]
+			if h == nil {
+				continue
+			}
+			for i, f := range t.fields {
+				a, v := h.Lookup(f.offset)
+				if v == nil {
+					t.fields[i].name = fmt.Sprintf("unk%d", f.offset)
+				} else if a == f.offset {
+					t.fields[i].name = v.(string)
+				} else {
+					t.fields[i].name = fmt.Sprintf("%s:%d", v, f.offset-a)
+				}
 			}
 		}
-	}
 	}
 	for _, t := range d.types {
 		dt := m[t.name]

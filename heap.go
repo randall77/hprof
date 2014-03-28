@@ -12,7 +12,7 @@ import (
 
 type Heap struct {
 	entries heap
-	sorted bool
+	sorted  bool
 }
 
 // Insert adds the pair <addr,value> to the heap.
@@ -39,10 +39,10 @@ func (h *Heap) Lookup(addr uint64) (uint64, interface{}) {
 type heap []entry
 
 type entry struct {
-	addr uint64
+	addr  uint64
 	value interface{}
 }
 
-func (h heap) Len() int { return len(h) }
+func (h heap) Len() int           { return len(h) }
 func (h heap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h heap) Less(i, j int) bool { return h[i].addr < h[j].addr }
