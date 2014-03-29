@@ -796,7 +796,7 @@ func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *Heap {
 		loc := readPtr(d, locexpr[1:])
 		if typ == nil {
 			// lots of non-Go global symbols hit here (rodata, reflect.cvtFloat·f, ...)
-			h.Insert(loc, "~" + name)
+			h.Insert(loc, "~"+name)
 			continue
 		}
 		f := typ.Fields()
@@ -944,11 +944,11 @@ func namefields(d *Dump, execname string) {
 			addr := x.addr + f.offset
 			a, v := globals.Lookup(addr)
 			if v == nil {
-			     continue
+				continue
 			}
-			name := v.(string)			
+			name := v.(string)
 			if a != addr {
-			   name = fmt.Sprintf("%s:%d", name, addr - a)
+				name = fmt.Sprintf("%s:%d", name, addr-a)
 			}
 			x.fields[i].name = name
 		}

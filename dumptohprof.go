@@ -313,30 +313,47 @@ func NoPtrClass(size uint64) uint64 {
 var stdClass map[uint64]uint64 = make(map[uint64]uint64, 0)
 
 func StdClass(t *Type, size uint64) uint64 {
+	p := prefix(size)
 	c := stdClass[t.addr]
 	if c == 0 {
 		c = newId()
 		f := make([]JavaField, size/8)
+		// default fields
 		for i := uint64(0); i < size/8; i++ {
 			f[i].kind = 11 // long
 			if i*8 < t.size {
-				f[i].name = fmt.Sprintf("f%03d", i*8)
+				f[i].name = fmt.Sprintf(p, i*8)
 			} else {
 				f[i].name = "sizeclass_pad"
 			}
 		}
+		// fields we know about
 		for _, fld := range t.fields {
 			switch fld.kind {
 			case fieldKindPtr:
 				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8].name = fmt.Sprintf(p+"%s", fld.offset, fld.name)
+			case fieldKindString:
+				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8].name = fmt.Sprintf(p+"%s.str", fld.offset, fld.name)
+				f[fld.offset/8+1].name = fmt.Sprintf(p+"%s.len", fld.offset+8, fld.name)
+			case fieldKindSlice:
+				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8].name = fmt.Sprintf(p+"%s.array", fld.offset, fld.name)
+				f[fld.offset/8+1].name = fmt.Sprintf(p+"%s.len", fld.offset+8, fld.name)
+				f[fld.offset/8+2].name = fmt.Sprintf(p+"%s.cap", fld.offset+16, fld.name)
 			// data fields might be pointers, might not be.  hprof has
 			// no good way to represent this.
 			case fieldKindIface:
-				f[fld.offset/8].kind = 2   // Object
+				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8].name = fmt.Sprintf(p+"%s.itab", fld.offset, fld.name)
 				f[fld.offset/8+1].kind = 2 // Object
+				f[fld.offset/8+1].name = fmt.Sprintf(p+"%s.data", fld.offset+8, fld.name)
 			case fieldKindEface:
-				f[fld.offset/8].kind = 2   // Object
+				f[fld.offset/8].kind = 2 // Object
+				f[fld.offset/8].name = fmt.Sprintf(p+"%s.type", fld.offset, fld.name)
 				f[fld.offset/8+1].kind = 2 // Object
+				f[fld.offset/8+1].name = fmt.Sprintf(p+"%s.data", fld.offset+8, fld.name)
 			}
 		}
 		addClass(c, size, t.name, f)
@@ -353,7 +370,21 @@ type ArrayKey struct {
 
 var arrayClass map[ArrayKey]uint64 = make(map[ArrayKey]uint64, 0)
 
+// This is a prefix to put in front of all field names to
+// make them sort correctly.  we use the bit offset in hex with
+// enough digits to fit.
+func prefix(size uint64) string {
+	d := 0
+	for size > 0 {
+		d++
+		size /= 16
+	}
+	return fmt.Sprintf("0x%%0%dx | ", d)
+}
+
 func ArrayClass(t *Type, size uint64) uint64 {
+	// figure out how many digits we need for prefix that sorts correctly
+	p := prefix(size)
 	k := ArrayKey{t.addr, size}
 	c := arrayClass[k]
 	if c == 0 {
@@ -363,7 +394,7 @@ func ArrayClass(t *Type, size uint64) uint64 {
 		for i := uint64(0); i < size/8; i++ {
 			f[i].kind = 11 // long
 			if i*8 < nelem*t.size {
-				f[i].name = fmt.Sprintf("f%03d_%03d", i*8/t.size, i*8%t.size)
+				f[i].name = fmt.Sprintf(p+"%d", i*8, i*8/t.size)
 			} else {
 				f[i].name = "sizeclass_pad"
 			}
@@ -372,12 +403,21 @@ func ArrayClass(t *Type, size uint64) uint64 {
 			for _, fld := range t.fields {
 				switch fld.kind {
 				case fieldKindPtr:
+					f[(i+fld.offset)/8].name = fmt.Sprintf(p+"%d.%s", i+fld.offset, i/t.size, fld.name)
 					f[(i+fld.offset)/8].kind = 2 // Object
+				case fieldKindString:
+					f[(i+fld.offset)/8].name = fmt.Sprintf(p+"%d.%s.str", i+fld.offset, i/t.size, fld.name)
+					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8+1].name = fmt.Sprintf(p+"%d.%s.len", i+fld.offset+8, i/t.size, fld.name)
 				case fieldKindIface:
-					f[(i+fld.offset)/8].kind = 2   // Object
+					f[(i+fld.offset)/8].name = fmt.Sprintf(p+"%d.%s.itab", i+fld.offset, i/t.size, fld.name)
+					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8+1].name = fmt.Sprintf(p+"%d.%s.data", i+fld.offset+8, i/t.size, fld.name)
 					f[(i+fld.offset)/8+1].kind = 2 // Object
 				case fieldKindEface:
-					f[(i+fld.offset)/8].kind = 2   // Object
+					f[(i+fld.offset)/8].name = fmt.Sprintf(p+"%d.%s.type", i+fld.offset, i/t.size, fld.name)
+					f[(i+fld.offset)/8].kind = 2 // Object
+					f[(i+fld.offset)/8+1].name = fmt.Sprintf(p+"%d.%s.data", i+fld.offset+8, i/t.size, fld.name)
 					f[(i+fld.offset)/8+1].kind = 2 // Object
 				}
 			}
