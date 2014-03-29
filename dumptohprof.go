@@ -309,6 +309,154 @@ func NoPtrClass(size uint64) uint64 {
 	return c
 }
 
+// This is a prefix to put in front of all field names to
+// make them sort correctly.  we use the byte offset in hex with
+// enough digits to fit.
+func prefix(size uint64) string {
+	d := 0
+	for size > 0 {
+		d++
+		size /= 16
+	}
+	return fmt.Sprintf("0x%%0%dx | ", d)
+}
+
+func appendPad(jf []JavaField, prefix string, base uint64, n uint64) []JavaField {
+	for n >= 8 {
+		jf = append(jf, JavaField{11, fmt.Sprintf(prefix+"pad", base)})
+		base += 8
+		n -= 8
+	}
+	if n >= 4 {
+		jf = append(jf, JavaField{10, fmt.Sprintf(prefix+"pad", base)})
+		base += 4
+		n -= 4
+	}
+	if n >= 2 {
+		jf = append(jf, JavaField{9, fmt.Sprintf(prefix+"pad", base)})
+		base += 2
+		n -= 2
+	}
+	if n >= 1 {
+		jf = append(jf, JavaField{8, fmt.Sprintf(prefix+"pad", base)})
+		base += 1
+		n -= 1
+	}
+	return jf
+}
+
+func appendJavaFields(jf []JavaField, fields []Field, prefix string, base uint64, idx int64) []JavaField {
+	off := uint64(0)
+	uintptr := byte(11)
+	if d.ptrSize == 4 {
+		uintptr = 10
+	}
+	for _, f := range fields {
+		// hprof format needs fields for the holes
+		if f.offset < off {
+			log.Fatal("out of order fields")
+		}
+		/*
+			if f.offset > off {
+				jf = appendPad(jf, prefix, base+off, f.offset-off)
+			}
+			for off+8 <= f.offset {
+				jf = append(jf, JavaField{11, fmt.Sprintf(prefix+"pad", base+off)})
+				off += 8
+			}
+			if off+4 <= f.offset {
+				jf = append(jf, JavaField{10, fmt.Sprintf(prefix+"pad", base+off)})
+				off += 4
+			}
+			if off+2 <= f.offset {
+				jf = append(jf, JavaField{9, fmt.Sprintf(prefix+"pad", base+off)})
+				off += 2
+			}
+			if off+1 <= f.offset {
+				jf = append(jf, JavaField{8, fmt.Sprintf(prefix+"pad", base+off)})
+				off += 1
+			}
+		*/
+
+		name := f.name
+		if idx >= 0 {
+			if name != "" {
+				name = fmt.Sprintf("%d.%s", idx, name)
+			} else {
+				name = fmt.Sprintf("%d", idx)
+			}
+		}
+		switch f.kind {
+		case fieldKindBool:
+			jf = append(jf, JavaField{4, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off++
+		case fieldKindUInt8:
+			jf = append(jf, JavaField{8, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off++
+		case fieldKindSInt8:
+			jf = append(jf, JavaField{8, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off++
+		case fieldKindUInt16:
+			jf = append(jf, JavaField{9, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += 2
+		case fieldKindSInt16:
+			jf = append(jf, JavaField{9, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += 2
+		case fieldKindUInt32:
+			jf = append(jf, JavaField{10, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += 4
+		case fieldKindSInt32:
+			jf = append(jf, JavaField{10, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += 4
+		case fieldKindUInt64:
+			jf = append(jf, JavaField{11, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += 8
+		case fieldKindSInt64:
+			jf = append(jf, JavaField{11, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += 8
+		case fieldKindFloat32:
+			jf = append(jf, JavaField{6, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += 4
+		case fieldKindFloat64:
+			jf = append(jf, JavaField{7, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += 8
+		case fieldKindComplex64:
+			jf = append(jf, JavaField{6, fmt.Sprintf(prefix+"%s.real", base+f.offset, name)})
+			jf = append(jf, JavaField{6, fmt.Sprintf(prefix+"%s.imag", base+f.offset+4, name)})
+			off += 8
+		case fieldKindComplex128:
+			jf = append(jf, JavaField{7, fmt.Sprintf(prefix+"%s.real", base+f.offset, name)})
+			jf = append(jf, JavaField{7, fmt.Sprintf(prefix+"%s.imag", base+f.offset+8, name)})
+			off += 16
+		case fieldKindPtr:
+			jf = append(jf, JavaField{2, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+			off += d.ptrSize
+		case fieldKindString:
+			jf = append(jf, JavaField{2, fmt.Sprintf(prefix+"%s.str", base+f.offset, name)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.len", base+f.offset+d.ptrSize, name)})
+			off += 2 * d.ptrSize
+		case fieldKindSlice:
+			jf = append(jf, JavaField{2, fmt.Sprintf(prefix+"%s.array", base+f.offset, name)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.len", base+f.offset+d.ptrSize, name)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.cap", base+f.offset+2*d.ptrSize, name)})
+			off += 3 * d.ptrSize
+		// data fields might be pointers, might not be.  hprof has
+		// no good way to represent this.
+		case fieldKindIface:
+			jf = append(jf, JavaField{2, fmt.Sprintf(prefix+"%s.itab", base+f.offset, name)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.data", base+f.offset+d.ptrSize, name)})
+			off += 2 * d.ptrSize
+		case fieldKindEface:
+			jf = append(jf, JavaField{2, fmt.Sprintf(prefix+"%s.type", base+f.offset, name)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.data", base+f.offset+d.ptrSize, name)})
+			off += 2 * d.ptrSize
+		default:
+			log.Fatalf("unknown field kind %d\n", f.kind)
+		}
+	}
+	return jf
+}
+
 // maps from type addr to the fake class object we use to represent that type
 var stdClass map[uint64]uint64 = make(map[uint64]uint64, 0)
 
@@ -317,46 +465,10 @@ func StdClass(t *Type, size uint64) uint64 {
 	c := stdClass[t.addr]
 	if c == 0 {
 		c = newId()
-		f := make([]JavaField, size/8)
-		// default fields
-		for i := uint64(0); i < size/8; i++ {
-			f[i].kind = 11 // long
-			if i*8 < t.size {
-				f[i].name = fmt.Sprintf(p, i*8)
-			} else {
-				f[i].name = "sizeclass_pad"
-			}
-		}
-		// fields we know about
-		for _, fld := range t.fields {
-			switch fld.kind {
-			case fieldKindPtr:
-				f[fld.offset/8].kind = 2 // Object
-				f[fld.offset/8].name = fmt.Sprintf(p+"%s", fld.offset, fld.name)
-			case fieldKindString:
-				f[fld.offset/8].kind = 2 // Object
-				f[fld.offset/8].name = fmt.Sprintf(p+"%s.str", fld.offset, fld.name)
-				f[fld.offset/8+1].name = fmt.Sprintf(p+"%s.len", fld.offset+8, fld.name)
-			case fieldKindSlice:
-				f[fld.offset/8].kind = 2 // Object
-				f[fld.offset/8].name = fmt.Sprintf(p+"%s.array", fld.offset, fld.name)
-				f[fld.offset/8+1].name = fmt.Sprintf(p+"%s.len", fld.offset+8, fld.name)
-				f[fld.offset/8+2].name = fmt.Sprintf(p+"%s.cap", fld.offset+16, fld.name)
-			// data fields might be pointers, might not be.  hprof has
-			// no good way to represent this.
-			case fieldKindIface:
-				f[fld.offset/8].kind = 2 // Object
-				f[fld.offset/8].name = fmt.Sprintf(p+"%s.itab", fld.offset, fld.name)
-				f[fld.offset/8+1].kind = 2 // Object
-				f[fld.offset/8+1].name = fmt.Sprintf(p+"%s.data", fld.offset+8, fld.name)
-			case fieldKindEface:
-				f[fld.offset/8].kind = 2 // Object
-				f[fld.offset/8].name = fmt.Sprintf(p+"%s.type", fld.offset, fld.name)
-				f[fld.offset/8+1].kind = 2 // Object
-				f[fld.offset/8+1].name = fmt.Sprintf(p+"%s.data", fld.offset+8, fld.name)
-			}
-		}
-		addClass(c, size, t.name, f)
+		var jf []JavaField
+		jf = appendJavaFields(jf, t.fields, p, 0, -1)
+		// TODO: sizeclass pad
+		addClass(c, size, t.name, jf)
 		stdClass[t.addr] = c
 	}
 	return c
@@ -370,59 +482,19 @@ type ArrayKey struct {
 
 var arrayClass map[ArrayKey]uint64 = make(map[ArrayKey]uint64, 0)
 
-// This is a prefix to put in front of all field names to
-// make them sort correctly.  we use the bit offset in hex with
-// enough digits to fit.
-func prefix(size uint64) string {
-	d := 0
-	for size > 0 {
-		d++
-		size /= 16
-	}
-	return fmt.Sprintf("0x%%0%dx | ", d)
-}
-
 func ArrayClass(t *Type, size uint64) uint64 {
-	// figure out how many digits we need for prefix that sorts correctly
 	p := prefix(size)
 	k := ArrayKey{t.addr, size}
 	c := arrayClass[k]
 	if c == 0 {
 		c = newId()
-		f := make([]JavaField, size/8)
 		nelem := size / t.size
-		for i := uint64(0); i < size/8; i++ {
-			f[i].kind = 11 // long
-			if i*8 < nelem*t.size {
-				f[i].name = fmt.Sprintf(p+"%d", i*8, i*8/t.size)
-			} else {
-				f[i].name = "sizeclass_pad"
-			}
+		var jf []JavaField
+		for i := uint64(0); i < nelem; i++ {
+			jf = appendJavaFields(jf, t.fields, p, i*t.size, int64(i))
 		}
-		for i := uint64(0); i <= size-t.size; i += t.size {
-			for _, fld := range t.fields {
-				switch fld.kind {
-				case fieldKindPtr:
-					f[(i+fld.offset)/8].name = fmt.Sprintf(p+"%d.%s", i+fld.offset, i/t.size, fld.name)
-					f[(i+fld.offset)/8].kind = 2 // Object
-				case fieldKindString:
-					f[(i+fld.offset)/8].name = fmt.Sprintf(p+"%d.%s.str", i+fld.offset, i/t.size, fld.name)
-					f[(i+fld.offset)/8].kind = 2 // Object
-					f[(i+fld.offset)/8+1].name = fmt.Sprintf(p+"%d.%s.len", i+fld.offset+8, i/t.size, fld.name)
-				case fieldKindIface:
-					f[(i+fld.offset)/8].name = fmt.Sprintf(p+"%d.%s.itab", i+fld.offset, i/t.size, fld.name)
-					f[(i+fld.offset)/8].kind = 2 // Object
-					f[(i+fld.offset)/8+1].name = fmt.Sprintf(p+"%d.%s.data", i+fld.offset+8, i/t.size, fld.name)
-					f[(i+fld.offset)/8+1].kind = 2 // Object
-				case fieldKindEface:
-					f[(i+fld.offset)/8].name = fmt.Sprintf(p+"%d.%s.type", i+fld.offset, i/t.size, fld.name)
-					f[(i+fld.offset)/8].kind = 2 // Object
-					f[(i+fld.offset)/8+1].name = fmt.Sprintf(p+"%d.%s.data", i+fld.offset+8, i/t.size, fld.name)
-					f[(i+fld.offset)/8+1].kind = 2 // Object
-				}
-			}
-		}
-		addClass(c, size, fmt.Sprintf("array{%d}%s", nelem, t.name), f)
+		addClass(c, size, fmt.Sprintf("array{%d}%s", nelem, t.name), jf)
+		arrayClass[k] = c
 	}
 	return c
 }
@@ -436,37 +508,25 @@ type ChanKey struct {
 var chanClass map[ChanKey]uint64 = make(map[ChanKey]uint64, 0)
 
 func ChanClass(t *Type, size uint64) uint64 {
+	uintptr := byte(11)
+	if d.ptrSize == 4 {
+		uintptr = 10
+	}
+	p := prefix(size)
 	k := ChanKey{t.addr, size}
 	c := chanClass[k]
 	if c == 0 {
 		c = newId()
-		f := make([]JavaField, size/8)
 		nelem := (size - d.hChanSize) / t.size
-		for i := uint64(0); i < size/8; i++ {
-			f[i].kind = 11 // long
-			if i*8 < d.hChanSize {
-				f[i].name = "chanhdr"
-			} else if i*8 < d.hChanSize+t.size*nelem {
-				f[i].name = fmt.Sprintf("f%03d_%03d", (i*8-d.hChanSize)/t.size, (i*8-d.hChanSize)%t.size)
-			} else {
-				f[i].name = "sizeclass_pad"
-			}
+		var jf []JavaField
+		for i := uint64(0); i < d.hChanSize; i += d.ptrSize {
+			jf = append(jf, JavaField{uintptr, "chanhdr"})
 		}
-		for i := d.hChanSize; i <= size-t.size; i += t.size {
-			for _, fld := range t.fields {
-				switch fld.kind {
-				case fieldKindPtr:
-					f[(i+fld.offset)/8].kind = 2 // Object
-				case fieldKindIface:
-					f[(i+fld.offset)/8].kind = 2   // Object
-					f[(i+fld.offset)/8+1].kind = 2 // Object
-				case fieldKindEface:
-					f[(i+fld.offset)/8].kind = 2   // Object
-					f[(i+fld.offset)/8+1].kind = 2 // Object
-				}
-			}
+		for i := uint64(0); i < nelem; i++ {
+			jf = appendJavaFields(jf, t.fields, p, d.hChanSize+i*t.size, int64(i))
 		}
-		addClass(c, size, fmt.Sprintf("chan{%d}%s", nelem, t.name), f)
+		addClass(c, size, fmt.Sprintf("chan{%d}%s", nelem, t.name), jf)
+		chanClass[k] = c
 	}
 	return c
 }
@@ -483,7 +543,7 @@ func addHeapDump() {
 	for _, x := range d.objects {
 		// figure out what class to use for this object
 		var c uint64
-		if len(x.data) >= 65536*8 {
+		if len(x.data) >= 65536*8 || (x.typ != nil && len(x.typ.fields) >= 65536) {
 			// Object is too big to enumerate each field.
 			// Make it an []Object.
 			dump = append(dump, 0x22) // object array dump
@@ -504,7 +564,6 @@ func addHeapDump() {
 			case typeKindArray:
 				c = ArrayClass(x.typ, uint64(len(x.data)))
 			case typeKindChan:
-				fmt.Printf("dumping chan %x\n", x.addr)
 				c = ChanClass(x.typ, uint64(len(x.data)))
 			default:
 				log.Fatal("unhandled kind")
@@ -516,15 +575,87 @@ func addHeapDump() {
 		dump = appendId(dump, c)
 		dump = append32(dump, uint32(len(x.data)))
 
-		// adjust ptr fields.  Any pointers outside the heap get zeroed,
-		// and any pointers to objects get adjusted to point to the object head.
+		// make copy of object data so we can modify it
+		data := make([]byte, len(x.data))
+		copy(data, x.data)
+
+		// Any pointers to objects get adjusted to point to the object head.
 		for _, e := range x.edges {
-			writePtr(x.data[e.fromoffset:], e.to.addr)
+			writePtr(data[e.fromoffset:], e.to.addr)
 		}
 
-		endianSwap(x.data)
-		dump = append(dump, x.data...)
-		endianSwap(x.data)
+		// convert to big-endian representation
+		if x.typ == nil {
+			// don't know fields, just do words
+			for i := 0; i < len(data); i += 8 {
+				bigEndian8(data[i:])
+			}
+		} else {
+			var size uint64
+			var n uint64
+			switch x.kind {
+			case typeKindObject:
+				n = 1
+			case typeKindArray:
+			size = x.typ.size
+				n = uint64(len(x.data)) / size
+			case typeKindChan:
+			size = x.typ.size
+				n = (uint64(len(x.data)) - d.hChanSize) / size
+				// TODO: need offset?
+			}
+			for i := uint64(0); i < n; i++ {
+				for _, f := range x.typ.fields {
+					switch f.kind {
+					case fieldKindBool:
+					case fieldKindUInt8:
+					case fieldKindSInt8:
+					case fieldKindSInt16:
+						bigEndian2(data[i*size+f.offset:])
+					case fieldKindUInt16:
+						bigEndian2(data[i*size+f.offset:])
+					case fieldKindSInt32:
+						bigEndian4(data[i*size+f.offset:])
+					case fieldKindUInt32:
+						bigEndian4(data[i*size+f.offset:])
+					case fieldKindSInt64:
+						bigEndian8(data[i*size+f.offset:])
+					case fieldKindUInt64:
+						bigEndian8(data[i*size+f.offset:])
+					case fieldKindFloat32:
+						bigEndian4(data[i*size+f.offset:])
+					case fieldKindFloat64:
+						bigEndian8(data[i*size+f.offset:])
+					case fieldKindComplex64:
+						bigEndian4(data[i*size+f.offset:])
+						bigEndian4(data[i*size+f.offset+4:])
+					case fieldKindComplex128:
+						bigEndian8(data[i*size+f.offset:])
+						bigEndian8(data[i*size+f.offset+8:])
+					case fieldKindPtr:
+						bigEndian8(data[i*size+f.offset:])
+					case fieldKindString:
+						bigEndian8(data[i*size+f.offset:])
+						bigEndian8(data[i*size+f.offset+8:])
+					case fieldKindSlice:
+						bigEndian8(data[i*size+f.offset:])
+						bigEndian8(data[i*size+f.offset+8:])
+						bigEndian8(data[i*size+f.offset+16:])
+					case fieldKindIface:
+						bigEndian8(data[i*size+f.offset:])
+						bigEndian8(data[i*size+f.offset+8:])
+					case fieldKindEface:
+						bigEndian8(data[i*size+f.offset:])
+						bigEndian8(data[i*size+f.offset+8:])
+					default:
+						log.Fatal("uknown field type")
+					}
+				}
+			}
+		}
+
+		// dump adjusted data
+		dump = append(dump, data...)
 	}
 
 	// output threads
@@ -577,6 +708,25 @@ func append64(b []byte, x uint64) []byte {
 }
 func appendId(b []byte, x uint64) []byte {
 	return append64(b, x)
+}
+
+func bigEndian2(x []byte) {
+	if d.order == binary.BigEndian {
+		return
+	}
+	x[0], x[1] = x[1], x[0]
+}
+func bigEndian4(x []byte) {
+	if d.order == binary.BigEndian {
+		return
+	}
+	x[0], x[1], x[2], x[3] = x[3], x[2], x[1], x[0]
+}
+func bigEndian8(x []byte) {
+	if d.order == binary.BigEndian {
+		return
+	}
+	x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] = x[7], x[6], x[5], x[4], x[3], x[2], x[1], x[0]
 }
 
 // TODO: works as long as all data is 8 bytes, but for <= 4 byte things this will

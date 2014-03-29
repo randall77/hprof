@@ -26,6 +26,20 @@ const (
 	fieldKindIface            = 4
 	fieldKindEface            = 5
 
+	fieldKindBool       = 6
+	fieldKindUInt8      = 7
+	fieldKindSInt8      = 8
+	fieldKindUInt16     = 9
+	fieldKindSInt16     = 10
+	fieldKindUInt32     = 11
+	fieldKindSInt32     = 12
+	fieldKindUInt64     = 13
+	fieldKindSInt64     = 14
+	fieldKindFloat32    = 15
+	fieldKindFloat64    = 16
+	fieldKindComplex64  = 17
+	fieldKindComplex128 = 18
+
 	typeKindObject       typeKind = 0
 	typeKindArray                 = 1
 	typeKindChan                  = 2
@@ -53,6 +67,11 @@ const (
 	dw_op_consts         = 17
 	dw_op_plus           = 34
 	dw_op_addr           = 3
+	dw_ate_boolean       = 2
+	dw_ate_complex_float = 3 // complex64/complex128
+	dw_ate_float         = 4 // float32/float64
+	dw_ate_signed        = 5 // int8/int16/int32/int64/int
+	dw_ate_unsigned      = 7 // uint8/uint16/uint32/uint64/uint/uintptr
 )
 
 type Dump struct {
@@ -179,8 +198,8 @@ type Field struct {
 type Type struct {
 	name     string // not necessarily unique
 	size     uint64
-	efaceptr bool // Efaces with this type have a data field which is a pointer
-	fields   []Field
+	efaceptr bool    // Efaces with this type have a data field which is a pointer
+	fields   []Field // ordered in increasing offset order
 
 	addr uint64
 }
@@ -262,6 +281,7 @@ func readFields(r io.ByteReader) []Field {
 	for {
 		kind := fieldKind(readUint64(r))
 		if kind == fieldKindEol {
+			// TODO: sort by offset, or check that it is sorted
 			return x
 		}
 		x = append(x, Field{kind: kind, offset: readUint64(r)})
@@ -497,22 +517,32 @@ func readSleb(b []byte) ([]byte, int64) {
 	return c, int64(v) << uint(64-k) >> uint(64-k)
 }
 
+func joinNames(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return fmt.Sprintf("%s.%s", a, b)
+}
+
 type dwarfType interface {
 	// Name returns the name of this type
 	Name() string
 	// Size returns the size of this type in bytes
 	Size() uint64
-	// Fields returns a map from the offset within the object to
-	// the name of the field at that offset.  Returns nil if
-	// there is a single unnamed field at offset 0.
-	Fields() map[uint64]string
+	// Fields returns a list of fields within the object, in increasing offset order.
+	Fields() []Field
 }
 type dwarfTypeImpl struct {
-	name string
-	size uint64
+	name   string
+	size   uint64
+	fields []Field
 }
 type dwarfBaseType struct {
 	dwarfTypeImpl
+	encoding int64
 }
 type dwarfTypedef struct {
 	dwarfTypeImpl
@@ -521,7 +551,6 @@ type dwarfTypedef struct {
 type dwarfStructType struct {
 	dwarfTypeImpl
 	members []dwarfTypeMember
-	fields  map[uint64]string
 }
 type dwarfTypeMember struct {
 	name   string
@@ -534,8 +563,7 @@ type dwarfPtrType struct {
 }
 type dwarfArrayType struct {
 	dwarfTypeImpl
-	elem   dwarfType
-	fields map[uint64]string
+	elem dwarfType
 }
 type dwarfFuncType struct {
 	dwarfTypeImpl
@@ -547,54 +575,104 @@ func (t *dwarfTypeImpl) Name() string {
 func (t *dwarfTypeImpl) Size() uint64 {
 	return t.size
 }
-func (t *dwarfTypeImpl) Fields() map[uint64]string {
-	return nil
+func (t *dwarfBaseType) Fields() []Field {
+	if t.fields != nil {
+		return t.fields
+	}
+	switch {
+	case t.encoding == dw_ate_boolean:
+		t.fields = append(t.fields, Field{fieldKindBool, 0, ""})
+	case t.encoding == dw_ate_signed && t.size == 1:
+		t.fields = append(t.fields, Field{fieldKindSInt8, 0, ""})
+	case t.encoding == dw_ate_unsigned && t.size == 1:
+		t.fields = append(t.fields, Field{fieldKindUInt8, 0, ""})
+	case t.encoding == dw_ate_signed && t.size == 2:
+		t.fields = append(t.fields, Field{fieldKindSInt16, 0, ""})
+	case t.encoding == dw_ate_unsigned && t.size == 2:
+		t.fields = append(t.fields, Field{fieldKindUInt16, 0, ""})
+	case t.encoding == dw_ate_signed && t.size == 4:
+		t.fields = append(t.fields, Field{fieldKindSInt32, 0, ""})
+	case t.encoding == dw_ate_unsigned && t.size == 4:
+		t.fields = append(t.fields, Field{fieldKindUInt32, 0, ""})
+	case t.encoding == dw_ate_signed && t.size == 8:
+		t.fields = append(t.fields, Field{fieldKindSInt64, 0, ""})
+	case t.encoding == dw_ate_unsigned && t.size == 8:
+		t.fields = append(t.fields, Field{fieldKindUInt64, 0, ""})
+	case t.encoding == dw_ate_float && t.size == 4:
+		t.fields = append(t.fields, Field{fieldKindFloat32, 0, ""})
+	case t.encoding == dw_ate_float && t.size == 8:
+		t.fields = append(t.fields, Field{fieldKindFloat64, 0, ""})
+	case t.encoding == dw_ate_complex_float && t.size == 8:
+		t.fields = append(t.fields, Field{fieldKindComplex64, 0, ""})
+	case t.encoding == dw_ate_complex_float && t.size == 16:
+		t.fields = append(t.fields, Field{fieldKindComplex128, 0, ""})
+	default:
+		log.Fatalf("unknown encoding type encoding=%d size=%d", t.encoding, t.size)
+	}
+	return t.fields
 }
-func (t *dwarfTypedef) Fields() map[uint64]string {
+func (t *dwarfTypedef) Fields() []Field {
 	return t.type_.Fields()
 }
 func (t *dwarfTypedef) Size() uint64 {
 	return t.type_.Size()
 }
-func (t *dwarfStructType) Fields() map[uint64]string {
-	// don't look inside strings, interfaces, slices
-	if t.name == "string" || t.name == "runtime.iface" || len(t.name) >= 2 && t.name[:2] == "[]" {
-		return nil
+func (t *dwarfPtrType) Fields() []Field {
+	if t.fields == nil {
+		t.fields = append(t.fields, Field{fieldKindPtr, 0, ""})
 	}
+	return t.fields
+}
+func (t *dwarfFuncType) Fields() []Field {
+	if t.fields == nil {
+		t.fields = append(t.fields, Field{fieldKindPtr, 0, ""})
+	}
+	return t.fields
+}
+
+func (t *dwarfStructType) Fields() []Field {
 	if t.fields != nil {
 		return t.fields
 	}
-	t.fields = make(map[uint64]string)
-	for _, m := range t.members {
-		f := m.type_.Fields()
-		if f == nil {
-			t.fields[m.offset] = m.name
-		} else {
-			for k, v := range f {
-				t.fields[m.offset+k] = fmt.Sprintf("%s.%s", m.name, v)
+	// Iterate over members, flatten fields.
+	// Don't look inside strings, interfaces, slices.
+	switch {
+	case t.name == "string":
+		t.fields = append(t.fields, Field{fieldKindString, 0, ""})
+	case t.name == "runtime.iface":
+		t.fields = append(t.fields, Field{fieldKindIface, 0, ""})
+	case t.name == "runtime.eface":
+		t.fields = append(t.fields, Field{fieldKindEface, 0, ""})
+	case len(t.name) >= 2 && t.name[:2] == "[]":
+		t.fields = append(t.fields, Field{fieldKindSlice, 0, ""})
+	default:
+		for _, m := range t.members {
+			if len(t.name) >= 11 && t.name[:11] == "map.bucket[" && m.name == "data" {
+				// dummy field used in the implementation - it overlaps with the
+				// dwarf-added keys&values fields.  We should get the dwarf outputter to squash this field.
+				// For now, we ignore it.
+				continue
+			}
+			for _, f := range m.type_.Fields() {
+				t.fields = append(t.fields, Field{f.kind, m.offset + f.offset, joinNames(m.name, f.name)})
 			}
 		}
 	}
 	return t.fields
 }
-func (t *dwarfArrayType) Fields() map[uint64]string {
+func (t *dwarfArrayType) Fields() []Field {
 	if t.fields != nil {
 		return t.fields
 	}
-	t.fields = make(map[uint64]string)
-	f := t.elem.Fields()
-	e := t.elem.Size()
-	if e == 0 {
+	s := t.elem.Size()
+	if s == 0 {
 		return t.fields
 	}
-	n := t.Size() / e
+	n := t.Size() / s
+	fields := t.elem.Fields()
 	for i := uint64(0); i < n; i++ {
-		if f == nil {
-			t.fields[i*e] = fmt.Sprintf("%d", i)
-		} else {
-			for k, v := range f {
-				t.fields[i*e+k] = fmt.Sprintf("%d.%s", i, v)
-			}
+		for _, f := range fields {
+			t.fields = append(t.fields, Field{f.kind, i*s + f.offset, joinNames(fmt.Sprintf("%d", i), f.name)})
 		}
 	}
 	return t.fields
@@ -603,7 +681,7 @@ func (t *dwarfArrayType) Fields() map[uint64]string {
 // Some type names in the dwarf info don't match the corresponding
 // type names in the binary.  We'll use the rewrites here to map
 // between the two.
-// TODO: just struct names for now.  Rename this?
+// TODO: just struct names for now.  Rename this?  Do this conversion in the dwarf dumper?
 type adjTypeName struct {
 	matcher   *regexp.Regexp
 	formatter string
@@ -633,6 +711,7 @@ func typeMap(d *Dump, w *dwarf.Data) map[dwarf.Offset]dwarfType {
 			x := new(dwarfBaseType)
 			x.name = e.Val(dwarf.AttrName).(string)
 			x.size = uint64(e.Val(dwarf.AttrByteSize).(int64))
+			x.encoding = e.Val(dwarf.AttrEncoding).(int64)
 			t[e.Offset] = x
 		case dwarf.TagPointerType:
 			x := new(dwarfPtrType)
@@ -752,13 +831,8 @@ func localsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) map[localKe
 					break
 				}
 			}
-			f := typ.Fields()
-			if f == nil {
-				m[localKey{funcname, uint64(-offset)}] = name
-			} else {
-				for k, v := range f {
-					m[localKey{funcname, uint64(-offset) - k}] = fmt.Sprintf("%s.%s", name, v)
-				}
+			for _, f := range typ.Fields() {
+				m[localKey{funcname, uint64(-offset) - f.offset}] = joinNames(name, f.name)
 			}
 		}
 	}
@@ -772,7 +846,7 @@ func argsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 	return nil
 }
 
-// map from global address to name of field at that address
+// map from global address to Field at that address
 func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *Heap {
 	h := new(Heap)
 	r := w.Reader()
@@ -796,16 +870,11 @@ func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *Heap {
 		loc := readPtr(d, locexpr[1:])
 		if typ == nil {
 			// lots of non-Go global symbols hit here (rodata, reflect.cvtFloat·f, ...)
-			h.Insert(loc, "~"+name)
+			h.Insert(loc, Field{fieldKindPtr, 0, "~" + name})
 			continue
 		}
-		f := typ.Fields()
-		if f == nil {
-			h.Insert(loc, name)
-		} else {
-			for k, v := range f {
-				h.Insert(loc+k, fmt.Sprintf("%s.%s", name, v))
-			}
+		for _, f := range typ.Fields() {
+			h.Insert(loc+f.offset, Field{f.kind, 0, joinNames(name, f.name)})
 		}
 	}
 	return h
@@ -879,7 +948,8 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 			if tp != 0 {
 				t := info.types[tp]
 				if t == nil {
-					log.Fatal("can't find eface type")
+					//log.Fatal("can't find eface type")
+					continue
 				}
 				if t.efaceptr {
 					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f, arrayidx)
@@ -890,7 +960,8 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 			if tp != 0 {
 				t := info.itabs[tp]
 				if t == nil {
-					log.Fatal("can't find iface tab")
+					//log.Fatal("can't find iface tab")
+					continue
 				}
 				if t.ptr {
 					edges = info.appendEdge(edges, data, off+info.dump.ptrSize, f, arrayidx)
@@ -919,9 +990,11 @@ func namefields(d *Dump, execname string) {
 		if dt == nil {
 			continue
 		}
-		for i, f := range t.fields {
-			t.fields[i].name = dt.Fields()[f.offset]
-		}
+		// Overwrite the fields from the dump with fields from the dwarf info.
+		// Dwarf should have the same info, plus it gives us field names and
+		// all the non-pointer fields.
+		t.fields = dt.Fields()
+		// TODO: check compatibility between dwarf and raw dump
 	}
 
 	// name all frame fields
@@ -946,11 +1019,11 @@ func namefields(d *Dump, execname string) {
 			if v == nil {
 				continue
 			}
-			name := v.(string)
+			ff := v.(Field)
 			if a != addr {
-				name = fmt.Sprintf("%s:%d", name, addr-a)
+				ff.name = fmt.Sprintf("%s:%d", ff.name, addr-a)
 			}
-			x.fields[i].name = name
+			x.fields[i] = ff
 		}
 	}
 }
