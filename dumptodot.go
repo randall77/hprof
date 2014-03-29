@@ -79,7 +79,7 @@ func main() {
 			name := x.typ.name
 			switch x.kind {
 			case 1:
-				name = fmt.Sprintf("array{%d}%s", uint64(len(x.data))/x.typ.size, name)
+				name = fmt.Sprintf("{%d}%s", uint64(len(x.data))/x.typ.size, name)
 			case 2:
 				name = fmt.Sprintf("chan{%d}%s", (uint64(len(x.data))-d.hChanSize)/x.typ.size, name)
 			}

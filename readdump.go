@@ -773,8 +773,8 @@ func argsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
 }
 
 // map from global address to name of field at that address
-func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) map[uint64]string {
-	m := make(map[uint64]string)
+func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *Heap {
+	h := new(Heap)
 	r := w.Reader()
 	for {
 		e, err := r.Next()
@@ -796,20 +796,19 @@ func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) map[uint64
 		loc := readPtr(d, locexpr[1:])
 		if typ == nil {
 			// lots of non-Go global symbols hit here (rodata, reflect.cvtFloat·f, ...)
-			// TODO: might be nice to at least record <name,loc> somewhere so if a root
-			// is found inside this symbol we could return name/offset for it.
+			h.Insert(loc, "~" + name)
 			continue
 		}
 		f := typ.Fields()
 		if f == nil {
-			m[loc] = name
+			h.Insert(loc, name)
 		} else {
 			for k, v := range f {
-				m[loc+k] = fmt.Sprintf("%s.%s", name, v)
+				h.Insert(loc+k, fmt.Sprintf("%s.%s", name, v))
 			}
 		}
 	}
-	return m
+	return h
 }
 
 // various maps used to link up data structures
@@ -914,7 +913,6 @@ func namefields(d *Dump, execname string) {
 	m := make(map[string]dwarfType)
 	for _, x := range t {
 		m[x.Name()] = x
-		//fmt.Printf("%s %v\n", x.Name(), x.Fields())
 	}
 	for _, t := range d.types {
 		dt := m[t.name]
@@ -932,7 +930,7 @@ func namefields(d *Dump, execname string) {
 		for i, f := range r.fields {
 			name := locals[localKey{r.name, uint64(len(r.data)) - f.offset}]
 			if name == "" {
-				name = fmt.Sprintf("*%d", f.offset)
+				name = fmt.Sprintf("~%d", f.offset)
 			}
 			r.fields[i].name = name
 		}
@@ -944,9 +942,13 @@ func namefields(d *Dump, execname string) {
 	for _, x := range []*Data{d.data, d.bss} {
 		for i, f := range x.fields {
 			addr := x.addr + f.offset
-			name := globals[addr]
-			if name == "" {
-				name = "unknown global"
+			a, v := globals.Lookup(addr)
+			if v == nil {
+			     continue
+			}
+			name := v.(string)			
+			if a != addr {
+			   name = fmt.Sprintf("%s:%d", name, addr - a)
 			}
 			x.fields[i].name = name
 		}
@@ -1051,7 +1053,7 @@ func link(d *Dump) {
 			}
 		case typeKindConservative:
 			for i := uint64(0); i < uint64(len(x.data)); i += d.ptrSize {
-				x.edges = info.appendEdge(x.edges, x.data, i, Field{fieldKindPtr, i, fmt.Sprintf("*%d", i)}, -1)
+				x.edges = info.appendEdge(x.edges, x.data, i, Field{fieldKindPtr, i, fmt.Sprintf("~%d", i)}, -1)
 			}
 		}
 	}
