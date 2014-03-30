@@ -1023,6 +1023,7 @@ func namefields(d *Dump, execname string) {
 			if a != addr {
 				ff.name = fmt.Sprintf("%s:%d", ff.name, addr-a)
 			}
+			ff.offset = f.offset
 			x.fields[i] = ff
 		}
 	}
