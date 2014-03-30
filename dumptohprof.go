@@ -27,6 +27,7 @@ const (
 	HPROF_GC_CLASS_DUMP      = 32
 	HPROF_GC_INSTANCE_DUMP   = 33
 	HPROF_GC_OBJ_ARRAY_DUMP  = 34
+	HPROF_GC_PRIM_ARRAY_DUMP = 35
 	HPROF_GC_ROOT_UNKNOWN    = 255
 
 	T_CLASS   = 2
@@ -40,11 +41,18 @@ const (
 	T_LONG    = 11
 )
 
+const (
+	// Special class IDs that represent big noptr/ptr arrays.
+	// Used when objects are too big to enumerate all fields.
+	bigNoPtrArray = 1
+	bigPtrArray   = 2
+)
+
 // set of all the object pointers in the file
 var usedIds map[uint64]struct{}
 
 // allocate a new, unused Id
-var idAlloc uint64
+var idAlloc uint64 = 104
 
 func newId() uint64 {
 	for {
@@ -293,7 +301,6 @@ type JavaField struct {
 }
 
 // allocates a class, issues a load command for it,
-// returns the class dump sub-tag missing only # instance fields
 func addClass(id uint64, size uint64, name string, fields []JavaField) {
 	// write load class command
 	var body []byte
@@ -335,7 +342,12 @@ func NoPtrClass(size uint64) uint64 {
 	c := noPtrClass[size]
 	if c == 0 {
 		c = newId()
-		addClass(c, size, fmt.Sprintf("noptr%d", size), []JavaField{})
+		p := prefix(size)
+		var jf []JavaField
+		for i := uint64(0); i < size; i += 8 {
+			jf = append(jf, JavaField{T_LONG, fmt.Sprintf(p, i)})
+		}
+		addClass(c, size, fmt.Sprintf("noptr%d", size), jf)
 		noPtrClass[size] = c
 	}
 	return c
@@ -485,12 +497,22 @@ func StdClass(t *Type, size uint64) uint64 {
 	p := prefix(size)
 	c := stdClass[t.addr]
 	if c == 0 {
-		c = newId()
 		var jf []JavaField
 		jf = appendJavaFields(jf, t, p, 0, -1)
 		jf = appendPad(jf, p, t.size, size-t.size) // pad to sizeclass
-		addClass(c, size, t.name, jf)
-		stdClass[t.addr] = c
+		if len(jf) < 0x10000 {
+			c = newId()
+			addClass(c, size, t.name, jf)
+			stdClass[t.addr] = c
+		} else {
+			c = bigNoPtrArray
+			for _, f := range jf {
+				if f.kind == T_CLASS {
+					c = bigPtrArray
+				}
+			}
+			stdClass[t.addr] = c
+		}
 	}
 	return c
 }
@@ -555,7 +577,6 @@ func ChanClass(t *Type, size uint64) uint64 {
 }
 
 func addHeapDump() {
-
 	// a few fake class dumps to keep java tools happy
 	dump = append(dump, fakeClassDump(java_lang_object, 0)...)
 	dump = append(dump, fakeClassDump(java_lang_class, java_lang_object)...)
@@ -564,21 +585,14 @@ func addHeapDump() {
 
 	// output each object as an instance
 	for _, x := range d.objects {
+	     if len(x.data) >= 8<<32 {
+	        // file format can't record objects this big.  TODO: error/warning?
+	        continue
+	     }
+
 		// figure out what class to use for this object
 		var c uint64
-		if len(x.data) >= 65536*8 || (x.typ != nil && len(x.typ.fields) >= 65536) {
-			// Object is too big to enumerate each field.
-			// Make it an []Object.
-			dump = append(dump, HPROF_GC_OBJ_ARRAY_DUMP) // object array dump
-			dump = appendId(dump, x.addr)
-			dump = append32(dump, stack_trace_serial_number)
-			dump = append32(dump, uint32(len(x.data)/8))
-			dump = appendId(dump, java_lang_objectarray)
-			endianSwap(x.data)
-			dump = append(dump, x.data...)
-			endianSwap(x.data)
-			continue
-		} else if x.typ == nil {
+		if x.typ == nil {
 			c = NoPtrClass(uint64(len(x.data)))
 		} else {
 			switch x.kind {
@@ -592,11 +606,6 @@ func addHeapDump() {
 				log.Fatal("unhandled kind")
 			}
 		}
-		dump = append(dump, HPROF_GC_INSTANCE_DUMP) // instance dump
-		dump = appendId(dump, x.addr)
-		dump = append32(dump, stack_trace_serial_number)
-		dump = appendId(dump, c)
-		dump = append32(dump, uint32(len(x.data)))
 
 		// make copy of object data so we can modify it
 		data := make([]byte, len(x.data))
@@ -677,7 +686,27 @@ func addHeapDump() {
 			}
 		}
 
-		// dump adjusted data
+		// dump object header
+		if c == bigNoPtrArray {
+			dump = append(dump, HPROF_GC_PRIM_ARRAY_DUMP)
+			dump = appendId(dump, x.addr)
+			dump = append32(dump, stack_trace_serial_number)
+			dump = append32(dump, uint32(len(x.data)/8))
+			dump = append(dump, T_LONG)
+		} else if c == bigPtrArray {
+			dump = append(dump, HPROF_GC_OBJ_ARRAY_DUMP)
+			dump = appendId(dump, x.addr)
+			dump = append32(dump, stack_trace_serial_number)
+			dump = append32(dump, uint32(len(x.data)/8))
+			dump = appendId(dump, java_lang_objectarray)
+		} else {
+			dump = append(dump, HPROF_GC_INSTANCE_DUMP)
+			dump = appendId(dump, x.addr)
+			dump = append32(dump, stack_trace_serial_number)
+			dump = appendId(dump, c)
+			dump = append32(dump, uint32(len(x.data)))
+		}
+		// dump object data
 		dump = append(dump, data...)
 	}
 
