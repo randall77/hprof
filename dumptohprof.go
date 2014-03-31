@@ -397,7 +397,7 @@ func addGlobal(name string, kind fieldKind, data []byte) {
 	body = append32(body, stack_trace_serial_number)
 	body = appendId(body, addString(name))
 	addTag(HPROF_LOAD_CLASS, body)
-	
+
 	// write a class dump subcommand
 	dump = append(dump, HPROF_GC_CLASS_DUMP)
 	dump = appendId(dump, c)
@@ -419,7 +419,7 @@ func addGlobal(name string, kind fieldKind, data []byte) {
 	}
 	dump = append16(dump, 0) // # of instance fields
 
-	// TODO: need to HPROF_GC_ROOT_STICKY_CLASS this class?	
+	// TODO: need to HPROF_GC_ROOT_STICKY_CLASS this class?
 }
 
 // This is a prefix to put in front of all field names to
@@ -670,7 +670,7 @@ func ChanClass(t *Type, size uint64) uint64 {
 		var jf []JavaField
 		for i := uint64(0); i < d.hChanSize; i += d.ptrSize {
 			// TODO: name these fields appropriately (len, cap, sendidx, recvidx,...)
-			jf = append(jf, JavaField{uintptr, fmt.Sprintf(p+"chanhdr",i)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(p+"chanhdr", i)})
 		}
 		for i := uint64(0); i < nelem; i++ {
 			jf = appendJavaFields(jf, t, p, d.hChanSize+i*t.size, int64(i))
@@ -812,10 +812,34 @@ func addHeapDump() {
 	for _, t := range d.goroutines {
 		for f := t.bos; f != nil; f = f.parent {
 			for _, e := range f.edges {
+				// we make one "thread" per field, because the roots
+				// get identified by "thread" in jhat.
+				id := newId()      // id of thread object
+				cid := newId()     // id of class of thread object
+				tid := newSerial() // thread serial number
+
+				// this is the class of the thread object.  Its name
+				// is what gets displayed with the root entry.
+				addClass(cid, 0, f.name+"."+e.fieldname, nil)
+
+				// new thread object
+				dump = append(dump, HPROF_GC_INSTANCE_DUMP)
+				dump = appendId(dump, id)
+				dump = append32(dump, stack_trace_serial_number)
+				dump = appendId(dump, cid)
+				dump = append32(dump, 0) // no data
+
+				// mark it as a thread
+				dump = append(dump, HPROF_GC_ROOT_THREAD_OBJ)
+				dump = appendId(dump, id)
+				dump = append32(dump, tid)
+				dump = append32(dump, stack_trace_serial_number)
+
+				// finally, make root come from this thread
 				dump = append(dump, HPROF_GC_ROOT_JAVA_FRAME)
 				dump = appendId(dump, e.to.addr)
-				dump = append32(dump, threadSerialNumbers[t])
-				dump = append32(dump, uint32(f.depth))
+				dump = append32(dump, tid)
+				dump = append32(dump, 0) // depth
 			}
 		}
 	}
