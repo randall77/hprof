@@ -647,9 +647,9 @@ type ChanKey struct {
 var chanClass map[ChanKey]uint64 = make(map[ChanKey]uint64, 0)
 
 func ChanClass(t *Type, size uint64) uint64 {
-	uintptr := byte(11)
+	uintptr := byte(T_LONG)
 	if d.ptrSize == 4 {
-		uintptr = 10
+		uintptr = T_INT
 	}
 	p := prefix(size)
 	k := ChanKey{t.addr, size}
@@ -659,12 +659,12 @@ func ChanClass(t *Type, size uint64) uint64 {
 		nelem := (size - d.hChanSize) / t.size
 		var jf []JavaField
 		for i := uint64(0); i < d.hChanSize; i += d.ptrSize {
-			jf = append(jf, JavaField{uintptr, "chanhdr"})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(p+"chanhdr",i)})
 		}
 		for i := uint64(0); i < nelem; i++ {
 			jf = appendJavaFields(jf, t, p, d.hChanSize+i*t.size, int64(i))
 		}
-		jf = appendPad(jf, p, nelem*t.size, size-nelem*t.size) // pad to sizeclass
+		jf = appendPad(jf, p, d.hChanSize+nelem*t.size, size-(d.hChanSize+nelem*t.size)) // pad to sizeclass
 		addClass(c, size, fmt.Sprintf("chan{%d}%s", nelem, t.name), jf)
 		chanClass[k] = c
 	}
