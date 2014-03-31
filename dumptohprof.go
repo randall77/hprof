@@ -21,7 +21,6 @@ const (
 	HPROF_START_THREAD = 10
 	HPROF_HEAP_DUMP    = 12
 
-	HPROF_GC_ROOT_JNI_GLOBAL = 1
 	HPROF_GC_ROOT_JAVA_FRAME = 3
 	HPROF_GC_ROOT_THREAD_OBJ = 8
 	HPROF_GC_CLASS_DUMP      = 32
@@ -32,7 +31,6 @@ const (
 
 	T_CLASS   = 2
 	T_BOOLEAN = 4
-	T_CHAR    = 5
 	T_FLOAT   = 6
 	T_DOUBLE  = 7
 	T_BYTE    = 8
@@ -43,7 +41,7 @@ const (
 
 const (
 	// Special class IDs that represent big noptr/ptr arrays.
-	// Used when objects are too big to enumerate all fields.
+	// Used when objects are too big to enumerate all their fields.
 	bigNoPtrArray = 1
 	bigPtrArray   = 2
 )
@@ -399,7 +397,7 @@ func addGlobal(name string, kind fieldKind, data []byte) {
 
 	c := newId()
 
-	// write load class command (need this for statics?)
+	// write load class command
 	var body []byte
 	sid := newSerial()
 	body = append32(body, sid)
@@ -407,7 +405,7 @@ func addGlobal(name string, kind fieldKind, data []byte) {
 	body = append32(body, stack_trace_serial_number)
 	body = appendId(body, addString(name))
 	addTag(HPROF_LOAD_CLASS, body)
-
+	
 	// write a class dump subcommand
 	dump = append(dump, HPROF_GC_CLASS_DUMP)
 	dump = appendId(dump, c)
@@ -422,12 +420,14 @@ func addGlobal(name string, kind fieldKind, data []byte) {
 	dump = append16(dump, 0)                  // constant pool size
 	dump = append16(dump, uint16(len(names))) // # of static fields
 	for i := range names {
-		// string id, type, data for that type (1,2,4,8 bytes)
+		// string id, type, data for that type
 		dump = appendId(dump, addString(names[i]))
 		dump = append(dump, types[i])
 		dump = append(dump, values[i]...)
 	}
 	dump = append16(dump, 0) // # of instance fields
+
+	// TODO: need to HPROF_GC_ROOT_STICKY_CLASS this class?	
 }
 
 // map from the size to the noptr object to the id of the fake class that represents them
@@ -450,7 +450,7 @@ func NoPtrClass(size uint64) uint64 {
 
 // This is a prefix to put in front of all field names to
 // make them sort correctly.  we use the byte offset in hex with
-// enough digits to fit.
+// just enough digits to fit.
 func prefix(size uint64) string {
 	d := 0
 	for size > 0 {
