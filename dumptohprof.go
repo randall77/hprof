@@ -334,57 +334,71 @@ func addClass(id uint64, size uint64, name string, fields []JavaField) {
 	}
 }
 
-// each global is represented as a java Class with one static field.
+// each global is represented as a java Class with a few static fields.
 // TODO: have a class per package with all globals from that package in it?
 func addGlobal(name string, kind fieldKind, data []byte) {
-     var names []string
-     var types []byte
-     var values [][]byte
-     switch kind {
-     default: // scalars
-     return
-		case fieldKindPtr:
+	var names []string
+	var types []byte
+	var values [][]byte
+	uintptr := byte(T_LONG)
+	if d.ptrSize == 4 {
+		uintptr = T_INT
+	}
+	switch kind {
+	default:
+		// scalars - worth outputting anything?
+		return
+	case fieldKindPtr:
 		names = append(names, "")
 		types = append(types, T_CLASS)
 		values = append(values, data[:d.ptrSize])
-		case fieldKindString:
+	case fieldKindString:
 		names = append(names, "str")
 		types = append(types, T_CLASS)
 		values = append(values, data[:d.ptrSize])
-		case fieldKindSlice:
+		names = append(names, "len")
+		types = append(types, uintptr)
+		values = append(values, data[d.ptrSize:2*d.ptrSize])
+	case fieldKindSlice:
 		names = append(names, "array")
 		types = append(types, T_CLASS)
 		values = append(values, data[:d.ptrSize])
-		case fieldKindIface:
+		names = append(names, "len")
+		types = append(types, uintptr)
+		values = append(values, data[d.ptrSize:2*d.ptrSize])
+		names = append(names, "cap")
+		types = append(types, uintptr)
+		values = append(values, data[2*d.ptrSize:3*d.ptrSize])
+	case fieldKindIface:
 		names = append(names, "itab")
 		types = append(types, T_CLASS)
 		values = append(values, data[:d.ptrSize])
 		names = append(names, "data")
 		types = append(types, T_CLASS)
-		values = append(values, data[:d.ptrSize])
-		case fieldKindEface:
+		values = append(values, data[d.ptrSize:2*d.ptrSize])
+	case fieldKindEface:
 		names = append(names, "type")
 		types = append(types, T_CLASS)
 		values = append(values, data[:d.ptrSize])
 		names = append(names, "data")
 		types = append(types, T_CLASS)
-		values = append(values, data[:d.ptrSize])
-     }
+		values = append(values, data[d.ptrSize:2*d.ptrSize])
+	}
 
-     // fix endian of values
-     if d.order == binary.LittleEndian {
-         for i := range values {
-	    v := values[i]
-	    w := make([]byte, len(v))
-	    for j := range v {
-	    w[j] = v[len(v)-1-j]
-	    }
-	    values[i] = w
-	 }
-     }
+	// fix endianness of values
+	for _, v := range values {
+		switch len(v) {
+		case 2:
+			bigEndian2(v)
+		case 4:
+			bigEndian4(v)
+		case 8:
+			bigEndian8(v)
+		}
+	}
 
-     c := newId()
-     
+	c := newId()
+
 	// write load class command (need this for statics?)
 	var body []byte
 	sid := newSerial()
@@ -398,14 +412,14 @@ func addGlobal(name string, kind fieldKind, data []byte) {
 	dump = append(dump, HPROF_GC_CLASS_DUMP)
 	dump = appendId(dump, c)
 	dump = append32(dump, stack_trace_serial_number)
-	dump = appendId(dump, 0) // superclass
-	dump = appendId(dump, 0) // class loader
-	dump = appendId(dump, 0) // signers
-	dump = appendId(dump, 0) // protection domain
-	dump = appendId(dump, 0) // reserved
-	dump = appendId(dump, 0) // reserved
-	dump = append32(dump, 0) // object size
-	dump = append16(dump, 0) // constant pool size
+	dump = appendId(dump, 0)                  // superclass
+	dump = appendId(dump, 0)                  // class loader
+	dump = appendId(dump, 0)                  // signers
+	dump = appendId(dump, 0)                  // protection domain
+	dump = appendId(dump, 0)                  // reserved
+	dump = appendId(dump, 0)                  // reserved
+	dump = append32(dump, 0)                  // object size
+	dump = append16(dump, 0)                  // constant pool size
 	dump = append16(dump, uint16(len(names))) // # of static fields
 	for i := range names {
 		// string id, type, data for that type (1,2,4,8 bytes)
@@ -666,10 +680,10 @@ func addHeapDump() {
 
 	// output each object as an instance
 	for _, x := range d.objects {
-	     if len(x.data) >= 8<<32 {
-	        // file format can't record objects this big.  TODO: error/warning?
-	        continue
-	     }
+		if len(x.data) >= 8<<32 {
+			// file format can't record objects this big.  TODO: error/warning?
+			continue
+		}
 
 		// figure out what class to use for this object
 		var c uint64
@@ -812,13 +826,13 @@ func addHeapDump() {
 	}
 	// data roots
 	for _, x := range []*Data{d.data, d.bss} {
-	        data := make([]byte, len(x.data))
 		// adjust edges to point to object beginnings
 		for _, e := range x.edges {
-			writePtr(data[e.fromoffset:], e.to.addr)
+			writePtr(x.data[e.fromoffset:], e.to.addr)
 		}
 		for _, f := range x.fields {
-		    addGlobal(f.name, f.kind, data[f.offset:])
+			//fmt.Printf("global %s %v\n", f.name, x.data[f.offset:f.offset+16])
+			addGlobal(f.name, f.kind, x.data[f.offset:])
 		}
 	}
 	for _, t := range d.otherroots {
