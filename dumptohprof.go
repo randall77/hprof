@@ -300,7 +300,7 @@ type JavaField struct {
 	name string
 }
 
-// allocates a class, issues a load command for it,
+// allocates a class, issues a load command for it.
 func addClass(id uint64, size uint64, name string, fields []JavaField) {
 	// write load class command
 	var body []byte
@@ -309,7 +309,6 @@ func addClass(id uint64, size uint64, name string, fields []JavaField) {
 	body = appendId(body, id)
 	body = append32(body, stack_trace_serial_number)
 	body = appendId(body, addString(name))
-	//fmt.Printf("%d == %s\n", sid, name)
 	addTag(HPROF_LOAD_CLASS, body)
 
 	// write a class dump subcommand
@@ -333,6 +332,88 @@ func addClass(id uint64, size uint64, name string, fields []JavaField) {
 		dump = appendId(dump, addString(field.name))
 		dump = append(dump, field.kind)
 	}
+}
+
+// each global is represented as a java Class with one static field.
+// TODO: have a class per package with all globals from that package in it?
+func addGlobal(name string, kind fieldKind, data []byte) {
+     var names []string
+     var types []byte
+     var values [][]byte
+     switch kind {
+     default: // scalars
+     return
+		case fieldKindPtr:
+		names = append(names, "")
+		types = append(types, T_CLASS)
+		values = append(values, data[:d.ptrSize])
+		case fieldKindString:
+		names = append(names, "str")
+		types = append(types, T_CLASS)
+		values = append(values, data[:d.ptrSize])
+		case fieldKindSlice:
+		names = append(names, "array")
+		types = append(types, T_CLASS)
+		values = append(values, data[:d.ptrSize])
+		case fieldKindIface:
+		names = append(names, "itab")
+		types = append(types, T_CLASS)
+		values = append(values, data[:d.ptrSize])
+		names = append(names, "data")
+		types = append(types, T_CLASS)
+		values = append(values, data[:d.ptrSize])
+		case fieldKindEface:
+		names = append(names, "type")
+		types = append(types, T_CLASS)
+		values = append(values, data[:d.ptrSize])
+		names = append(names, "data")
+		types = append(types, T_CLASS)
+		values = append(values, data[:d.ptrSize])
+     }
+
+     // fix endian of values
+     if d.order == binary.LittleEndian {
+         for i := range values {
+	    v := values[i]
+	    w := make([]byte, len(v))
+	    for j := range v {
+	    w[j] = v[len(v)-1-j]
+	    }
+	    values[i] = w
+	 }
+     }
+
+     c := newId()
+     
+	// write load class command (need this for statics?)
+	var body []byte
+	sid := newSerial()
+	body = append32(body, sid)
+	body = appendId(body, c)
+	body = append32(body, stack_trace_serial_number)
+	body = appendId(body, addString(name))
+	addTag(HPROF_LOAD_CLASS, body)
+
+	// write a class dump subcommand
+	dump = append(dump, HPROF_GC_CLASS_DUMP)
+	dump = appendId(dump, c)
+	dump = append32(dump, stack_trace_serial_number)
+	dump = appendId(dump, 0) // superclass
+	dump = appendId(dump, 0) // class loader
+	dump = appendId(dump, 0) // signers
+	dump = appendId(dump, 0) // protection domain
+	dump = appendId(dump, 0) // reserved
+	dump = appendId(dump, 0) // reserved
+	dump = append32(dump, 0) // object size
+	dump = append16(dump, 0) // constant pool size
+	dump = append16(dump, uint16(len(names))) // # of static fields
+	for i := range names {
+		// string id, type, data for that type (1,2,4,8 bytes)
+		dump = appendId(dump, addString(names[i]))
+		dump = append(dump, types[i])
+		dump = append(dump, values[i]...)
+	}
+	dump = append16(dump, 0) // # of instance fields
 }
 
 // map from the size to the noptr object to the id of the fake class that represents them
@@ -731,10 +812,13 @@ func addHeapDump() {
 	}
 	// data roots
 	for _, x := range []*Data{d.data, d.bss} {
+	        data := make([]byte, len(x.data))
+		// adjust edges to point to object beginnings
 		for _, e := range x.edges {
-			dump = append(dump, HPROF_GC_ROOT_JNI_GLOBAL)
-			dump = appendId(dump, e.to.addr)
-			dump = appendId(dump, x.addr+e.fromoffset) // jni global ref id
+			writePtr(data[e.fromoffset:], e.to.addr)
+		}
+		for _, f := range x.fields {
+		    addGlobal(f.name, f.kind, data[f.offset:])
 		}
 	}
 	for _, t := range d.otherroots {
