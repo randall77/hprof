@@ -15,7 +15,6 @@ import (
 const (
 	HPROF_UTF8         = 1
 	HPROF_LOAD_CLASS   = 2
-	HPROF_UNLOAD_CLASS = 3
 	HPROF_FRAME        = 4
 	HPROF_TRACE        = 5
 	HPROF_START_THREAD = 10
@@ -42,6 +41,7 @@ const (
 const (
 	// Special class IDs that represent big noptr/ptr arrays.
 	// Used when objects are too big to enumerate all their fields.
+	// These are for internal use only - they never make it to the hprof file.
 	bigNoPtrArray = 1
 	bigPtrArray   = 2
 )
@@ -135,8 +135,7 @@ func main() {
 	addLoadClass("int[]")
 	addLoadClass("long[]")
 
-	addStackTrace() // stack trace must come after addLoadClass(java.lang.Object)
-	addDummyThread()
+	addDummyThread() // must come after addLoadClass(java.lang.Object)
 
 	addThreads()
 
@@ -192,41 +191,32 @@ func addDummyThread() {
 	body = appendId(body, addString("the one thread group"))
 	body = appendId(body, addString("the one thread parent group"))
 	addTag(HPROF_START_THREAD, body)
+
+	body = nil
+	frameId := newId()
+	body = appendId(body, frameId)
+	body = appendId(body, addString("unknown"))
+	body = appendId(body, addString(""))
+	body = appendId(body, addString("unknown.go"))
+	body = append32(body, go_class_ser)
+	body = append32(body, 0) // line #
+	addTag(HPROF_FRAME, body)
+
+	body = nil
+	body = append32(body, stack_trace_serial_number)
+	body = append32(body, thread_serial_number)
+	body = append32(body, 1) // # of frames
+	body = appendId(body, frameId)
+	addTag(HPROF_TRACE, body)
 }
 
 func addThreads() {
-	for _, f := range d.frames {
-		var body []byte
-		body = appendId(body, f.addr)
-		body = appendId(body, addString(f.name))
-		body = appendId(body, addString(""))
-		body = appendId(body, addString("dummysource.go"))
-		body = append32(body, go_class_ser)
-		body = append32(body, 0) // line # info
-		addTag(HPROF_FRAME, body)
-	}
-
 	for _, t := range d.goroutines {
-		n := 0
-		for f := t.bos; f != nil; f = f.parent {
-			n++
-		}
-
 		tid := newSerial() // thread serial number
 		sid := newSerial() // stack trace serial number
 
-		// stack trace
-		var body []byte
-		body = append32(body, sid)
-		body = append32(body, tid)
-		body = append32(body, uint32(n))
-		for f := t.bos; f != nil; f = f.parent {
-			body = appendId(body, f.addr)
-		}
-		addTag(HPROF_TRACE, body)
-
 		// thread record
-		body = nil
+		var body []byte
 		body = append32(body, tid)
 		body = appendId(body, t.addr)
 		body = append32(body, sid)
@@ -234,6 +224,30 @@ func addThreads() {
 		body = appendId(body, addString("threadgroup"))
 		body = appendId(body, addString("threadparentgroup"))
 		addTag(HPROF_START_THREAD, body)
+
+		// frames
+		n := 0
+		for f := t.bos; f != nil; f = f.parent {
+			body = nil
+			body = appendId(body, f.addr)
+			body = appendId(body, addString(f.name))
+			body = appendId(body, addString(""))
+			body = appendId(body, addString("dummysource.go"))
+			body = append32(body, go_class_ser)
+			body = append32(body, 0) // line # info
+			addTag(HPROF_FRAME, body)
+			n++
+		}
+
+		// stack trace
+		body = nil
+		body = append32(body, sid)
+		body = append32(body, tid)
+		body = append32(body, uint32(n))
+		for f := t.bos; f != nil; f = f.parent {
+			body = appendId(body, f.addr)
+		}
+		addTag(HPROF_TRACE, body)
 
 		threadSerialNumbers[t] = tid
 		stackTraceSerialNumbers[t] = sid
@@ -251,28 +265,6 @@ func addLoadClass(c string) (uint64, uint32) {
 	body = appendId(body, addString(c))
 	addTag(HPROF_LOAD_CLASS, body)
 	return id, sid
-}
-
-func addStackFrame(name string, sig string, file string) uint64 {
-	var body []byte
-	id := newId()
-	body = appendId(body, id)
-	body = appendId(body, addString(name))
-	body = appendId(body, addString(sig))
-	body = appendId(body, addString(file))
-	body = append32(body, go_class_ser)
-	body = append32(body, 0) // line #
-	addTag(HPROF_FRAME, body)
-	return id
-}
-
-func addStackTrace() {
-	var body []byte
-	body = append32(body, stack_trace_serial_number)
-	body = append32(body, thread_serial_number)
-	body = append32(body, 1) // # of frames
-	body = appendId(body, addStackFrame("unknown", "", "unknown.go"))
-	addTag(HPROF_TRACE, body)
 }
 
 func fakeClassDump(id uint64, superid uint64) []byte {
@@ -834,7 +826,6 @@ func addHeapDump() {
 			writePtr(x.data[e.fromoffset:], e.to.addr)
 		}
 		for _, f := range x.fields {
-			//fmt.Printf("global %s %v\n", f.name, x.data[f.offset:f.offset+16])
 			addGlobal(f.name, f.kind, x.data[f.offset:])
 		}
 	}
@@ -886,14 +877,6 @@ func bigEndianP(x []byte) {
 		bigEndian4(x)
 	} else {
 		bigEndian8(x)
-	}
-}
-
-// TODO: works as long as all data is 8 bytes, but for <= 4 byte things this will
-// misattribute the data.
-func endianSwap(b []byte) {
-	for ; len(b) >= 8; b = b[8:] {
-		b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7] = b[7], b[6], b[5], b[4], b[3], b[2], b[1], b[0]
 	}
 }
 
