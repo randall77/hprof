@@ -430,24 +430,6 @@ func addGlobal(name string, kind fieldKind, data []byte) {
 	// TODO: need to HPROF_GC_ROOT_STICKY_CLASS this class?	
 }
 
-// map from the size to the noptr object to the id of the fake class that represents them
-var noPtrClass map[uint64]uint64 = make(map[uint64]uint64, 0)
-
-func NoPtrClass(size uint64) uint64 {
-	c := noPtrClass[size]
-	if c == 0 {
-		c = newId()
-		p := prefix(size)
-		var jf []JavaField
-		for i := uint64(0); i < size; i += 8 {
-			jf = append(jf, JavaField{T_LONG, fmt.Sprintf(p, i)})
-		}
-		addClass(c, size, fmt.Sprintf("noptr%d", size), jf)
-		noPtrClass[size] = c
-	}
-	return c
-}
-
 // This is a prefix to put in front of all field names to
 // make them sort correctly.  we use the byte offset in hex with
 // just enough digits to fit.
@@ -585,7 +567,11 @@ func appendJavaFields(jf []JavaField, t *Type, prefix string, base uint64, idx i
 	return jf
 }
 
-// maps from type addr to the fake class object we use to represent that type
+// javaFields maps from class id to the list of java fields for that class
+// if the object is too big to have explicit fields, it will not appear here.
+var javaFields map[uint64][]JavaField = make(map[uint64][]JavaField, 0)
+
+// stdClass maps from type addr to the Java class object we use to represent that type
 var stdClass map[uint64]uint64 = make(map[uint64]uint64, 0)
 
 func StdClass(t *Type, size uint64) uint64 {
@@ -598,7 +584,7 @@ func StdClass(t *Type, size uint64) uint64 {
 		if len(jf) < 0x10000 {
 			c = newId()
 			addClass(c, size, t.name, jf)
-			stdClass[t.addr] = c
+			javaFields[c] = jf
 		} else {
 			c = bigNoPtrArray
 			for _, f := range jf {
@@ -606,13 +592,36 @@ func StdClass(t *Type, size uint64) uint64 {
 					c = bigPtrArray
 				}
 			}
-			stdClass[t.addr] = c
 		}
+		stdClass[t.addr] = c
 	}
 	return c
 }
 
-// maps from type addr to the fake class object we use to represent that type
+// noPtrClass maps from the size to the noptr object to the id of the fake class that represents them
+var noPtrClass map[uint64]uint64 = make(map[uint64]uint64, 0)
+
+func NoPtrClass(size uint64) uint64 {
+	c := noPtrClass[size]
+	if c == 0 {
+		p := prefix(size)
+		var jf []JavaField
+		for i := uint64(0); i < size; i += 8 {
+			jf = append(jf, JavaField{T_LONG, fmt.Sprintf(p, i)})
+		}
+		if len(jf) < 0x10000 {
+			c = newId()
+			addClass(c, size, fmt.Sprintf("noptr%d", size), jf)
+			javaFields[c] = jf
+		} else {
+			c = bigNoPtrArray
+		}
+		noPtrClass[size] = c
+	}
+	return c
+}
+
+// arrayClass maps from type addr + size to the fake class object we use to represent that type/size
 type ArrayKey struct {
 	typaddr uint64
 	size    uint64
@@ -621,24 +630,34 @@ type ArrayKey struct {
 var arrayClass map[ArrayKey]uint64 = make(map[ArrayKey]uint64, 0)
 
 func ArrayClass(t *Type, size uint64) uint64 {
-	p := prefix(size)
 	k := ArrayKey{t.addr, size}
 	c := arrayClass[k]
 	if c == 0 {
-		c = newId()
+		p := prefix(size)
 		nelem := size / t.size
 		var jf []JavaField
 		for i := uint64(0); i < nelem; i++ {
 			jf = appendJavaFields(jf, t, p, i*t.size, int64(i))
 		}
 		jf = appendPad(jf, p, nelem*t.size, size-nelem*t.size) // pad to sizeclass
-		addClass(c, size, fmt.Sprintf("array{%d}%s", nelem, t.name), jf)
+		if len(jf) < 0x10000 {
+			c = newId()
+			addClass(c, size, fmt.Sprintf("array{%d}%s", nelem, t.name), jf)
+			javaFields[c] = jf
+		} else {
+			c = bigNoPtrArray
+			for _, f := range jf {
+				if f.kind == T_CLASS {
+					c = bigPtrArray
+				}
+			}
+		}
 		arrayClass[k] = c
 	}
 	return c
 }
 
-// maps from type addr to the fake class object we use to represent that type
+// chanClass maps from type addr + size to the fake class object we use to represent that type/size
 type ChanKey struct {
 	typaddr uint64
 	size    uint64
@@ -647,25 +666,36 @@ type ChanKey struct {
 var chanClass map[ChanKey]uint64 = make(map[ChanKey]uint64, 0)
 
 func ChanClass(t *Type, size uint64) uint64 {
-	uintptr := byte(T_LONG)
-	if d.ptrSize == 4 {
-		uintptr = T_INT
-	}
-	p := prefix(size)
 	k := ChanKey{t.addr, size}
 	c := chanClass[k]
 	if c == 0 {
-		c = newId()
+		uintptr := byte(T_LONG)
+		if d.ptrSize == 4 {
+			uintptr = T_INT
+		}
+		p := prefix(size)
 		nelem := (size - d.hChanSize) / t.size
 		var jf []JavaField
 		for i := uint64(0); i < d.hChanSize; i += d.ptrSize {
+			// TODO: name these fields appropriately (len, cap, sendidx, recvidx,...)
 			jf = append(jf, JavaField{uintptr, fmt.Sprintf(p+"chanhdr",i)})
 		}
 		for i := uint64(0); i < nelem; i++ {
 			jf = appendJavaFields(jf, t, p, d.hChanSize+i*t.size, int64(i))
 		}
 		jf = appendPad(jf, p, d.hChanSize+nelem*t.size, size-(d.hChanSize+nelem*t.size)) // pad to sizeclass
-		addClass(c, size, fmt.Sprintf("chan{%d}%s", nelem, t.name), jf)
+		if len(jf) < 0x10000 {
+			c = newId()
+			addClass(c, size, fmt.Sprintf("chan{%d}%s", nelem, t.name), jf)
+			javaFields[c] = jf
+		} else {
+			c = bigNoPtrArray
+			for _, f := range jf {
+				if f.kind == T_CLASS {
+					c = bigPtrArray
+				}
+			}
+		}
 		chanClass[k] = c
 	}
 	return c
@@ -678,10 +708,13 @@ func addHeapDump() {
 	dump = append(dump, fakeClassDump(java_lang_classloader, java_lang_object)...)
 	dump = append(dump, fakeClassDump(java_lang_string, java_lang_object)...)
 
+	// scratch space for modifying object data
+	var data []byte
+
 	// output each object as an instance
 	for _, x := range d.objects {
 		if len(x.data) >= 8<<32 {
-			// file format can't record objects this big.  TODO: error/warning?
+			// file format can't record objects this big.  TODO: error/warning?  Truncate?
 			continue
 		}
 
@@ -702,9 +735,8 @@ func addHeapDump() {
 			}
 		}
 
-		// make copy of object data so we can modify it
-		data := make([]byte, len(x.data))
-		copy(data, x.data)
+		// make a copy of the object data so we can modify it
+		data = append(data[:0], x.data...)
 
 		// Any pointers to objects get adjusted to point to the object head.
 		for _, e := range x.edges {
@@ -712,71 +744,42 @@ func addHeapDump() {
 		}
 
 		// convert to big-endian representation
-		if x.typ == nil {
-			// don't know fields, just do words
-			for i := 0; i < len(data); i += 8 {
+		if c == bigNoPtrArray {
+			for i := uint64(0); i < uint64(len(data)); i += 8 {
 				bigEndian8(data[i:])
 			}
-		} else {
-			var size uint64
-			var n uint64
-			switch x.kind {
-			case typeKindObject:
-				n = 1
-			case typeKindArray:
-				size = x.typ.size
-				n = uint64(len(x.data)) / size
-			case typeKindChan:
-				size = x.typ.size
-				n = (uint64(len(x.data)) - d.hChanSize) / size
-				// TODO: need offset?
+		} else if c == bigPtrArray {
+			for i := uint64(0); i < uint64(len(data)); i += d.ptrSize {
+				bigEndianP(data[i:])
 			}
-			for i := uint64(0); i < n; i++ {
-				for _, f := range x.typ.fields {
-					switch f.kind {
-					case fieldKindBool:
-					case fieldKindUInt8:
-					case fieldKindSInt8:
-					case fieldKindSInt16:
-						bigEndian2(data[i*size+f.offset:])
-					case fieldKindUInt16:
-						bigEndian2(data[i*size+f.offset:])
-					case fieldKindSInt32:
-						bigEndian4(data[i*size+f.offset:])
-					case fieldKindUInt32:
-						bigEndian4(data[i*size+f.offset:])
-					case fieldKindSInt64:
-						bigEndian8(data[i*size+f.offset:])
-					case fieldKindUInt64:
-						bigEndian8(data[i*size+f.offset:])
-					case fieldKindFloat32:
-						bigEndian4(data[i*size+f.offset:])
-					case fieldKindFloat64:
-						bigEndian8(data[i*size+f.offset:])
-					case fieldKindComplex64:
-						bigEndian4(data[i*size+f.offset:])
-						bigEndian4(data[i*size+f.offset+4:])
-					case fieldKindComplex128:
-						bigEndian8(data[i*size+f.offset:])
-						bigEndian8(data[i*size+f.offset+8:])
-					case fieldKindPtr:
-						bigEndian8(data[i*size+f.offset:])
-					case fieldKindString:
-						bigEndian8(data[i*size+f.offset:])
-						bigEndian8(data[i*size+f.offset+8:])
-					case fieldKindSlice:
-						bigEndian8(data[i*size+f.offset:])
-						bigEndian8(data[i*size+f.offset+8:])
-						bigEndian8(data[i*size+f.offset+16:])
-					case fieldKindIface:
-						bigEndian8(data[i*size+f.offset:])
-						bigEndian8(data[i*size+f.offset+8:])
-					case fieldKindEface:
-						bigEndian8(data[i*size+f.offset:])
-						bigEndian8(data[i*size+f.offset+8:])
-					default:
-						log.Fatal("uknown field type")
-					}
+		} else {
+			off := uint64(0)
+			for _, f := range javaFields[c] {
+				switch f.kind {
+				case T_CLASS:
+					bigEndianP(data[off:])
+					off += d.ptrSize
+				case T_BOOLEAN:
+					off++
+				case T_FLOAT:
+					bigEndian4(data[off:])
+					off += 4
+				case T_DOUBLE:
+					bigEndian8(data[off:])
+					off += 8
+				case T_BYTE:
+					off++
+				case T_SHORT:
+					bigEndian2(data[off:])
+					off += 2
+				case T_INT:
+					bigEndian4(data[off:])
+					off += 4
+				case T_LONG:
+					bigEndian8(data[off:])
+					off += 8
+				default:
+					log.Fatalf("bad type %d\n", f.kind)
 				}
 			}
 		}
@@ -877,6 +880,13 @@ func bigEndian8(x []byte) {
 		return
 	}
 	x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] = x[7], x[6], x[5], x[4], x[3], x[2], x[1], x[0]
+}
+func bigEndianP(x []byte) {
+	if d.ptrSize == 4 {
+		bigEndian4(x)
+	} else {
+		bigEndian8(x)
+	}
 }
 
 // TODO: works as long as all data is 8 bytes, but for <= 4 byte things this will
