@@ -349,7 +349,7 @@ func addGlobal(name string, kind fieldKind, data []byte) {
 		// scalars - worth outputting anything?
 		return
 	case fieldKindPtr:
-		names = append(names, "")
+		names = append(names, "ptr")
 		types = append(types, T_CLASS)
 		values = append(values, data[:d.ptrSize])
 	case fieldKindString:
