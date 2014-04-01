@@ -108,8 +108,8 @@ type Edge struct {
 	ToOffset   uint64  // offset in destination object where ptr lands
 
 	// name of field / offset within field, if known
-	Fieldname   string
-	fieldoffset uint64
+	FieldName   string
+	FieldOffset uint64
 }
 
 type Object struct {
@@ -145,7 +145,7 @@ type QFinalizer struct {
 	code  uint64 // code ptr (fn->fn)
 	fint  uint64 // type of function argument
 	ot    uint64 // type of object
-	edges []Edge
+	Edges []Edge
 }
 
 type Defer struct {
@@ -206,7 +206,7 @@ type Type struct {
 
 type GoRoutine struct {
 	Bos  *StackFrame // frame at the top of the stack (i.e. currently running)
-	ctxt *Object
+	Ctxt *Object
 
 	Addr         uint64
 	bosaddr      uint64
@@ -228,7 +228,7 @@ type StackFrame struct {
 	Parent    *StackFrame
 	goroutine *GoRoutine
 	Depth     uint64
-	data      []byte
+	Data      []byte
 	Edges     []Edge
 
 	Addr      uint64
@@ -352,7 +352,7 @@ func rawRead(filename string) *Dump {
 			t.Addr = readUint64(r)
 			t.Depth = readUint64(r)
 			t.childaddr = readUint64(r)
-			t.data = readBytes(r)
+			t.Data = readBytes(r)
 			t.entry = readUint64(r)
 			t.pc = readUint64(r)
 			t.Name = readString(r)
@@ -1001,7 +1001,7 @@ func namefields(d *Dump, execname string) {
 	locals := localsMap(d, w, t)
 	for _, r := range d.Frames {
 		for i, f := range r.fields {
-			name := locals[localKey{r.Name, uint64(len(r.data)) - f.Offset}]
+			name := locals[localKey{r.Name, uint64(len(r.Data)) - f.Offset}]
 			if name == "" {
 				name = fmt.Sprintf("~%d", f.Offset)
 			}
@@ -1068,7 +1068,7 @@ func link(d *Dump) {
 
 	// link stack frames to objects
 	for _, f := range d.Frames {
-		f.Edges = info.appendFields(f.Edges, f.data, f.fields, 0, -1)
+		f.Edges = info.appendFields(f.Edges, f.Data, f.fields, 0, -1)
 	}
 
 	// link up frames in sequence
@@ -1091,7 +1091,7 @@ func link(d *Dump) {
 		}
 		x := info.findObj(g.ctxtaddr)
 		if x != nil {
-			g.ctxt = x
+			g.Ctxt = x
 		}
 	}
 
@@ -1148,7 +1148,7 @@ func link(d *Dump) {
 		for _, addr := range []uint64{f.obj, f.fn, f.fint, f.ot} {
 			x := info.findObj(addr)
 			if x != nil {
-				f.edges = append(f.edges, Edge{x, 0, addr - x.Addr, "", 0})
+				f.Edges = append(f.Edges, Edge{x, 0, addr - x.Addr, "", 0})
 			}
 		}
 	}

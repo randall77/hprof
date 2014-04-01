@@ -830,7 +830,7 @@ func addHeapDump() {
 
 				// this is the class of the thread object.  Its name
 				// is what gets displayed with the root entry.
-				addClass(cid, 0, f.Name+"."+e.Fieldname, nil)
+				addClass(cid, 0, f.Name+"."+e.FieldName, nil)
 
 				// new thread object
 				dump = append(dump, HPROF_GC_INSTANCE_DUMP)
