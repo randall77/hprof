@@ -1122,8 +1122,10 @@ func link(d *Dump) {
 				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i/t.size))
 			}
 		case typeKindChan:
-			for i := d.hChanSize; i <= uint64(len(x.data))-t.size; i += t.size {
-				x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i/t.size))
+			if t.size > 0 {
+				for i := d.hChanSize; i <= uint64(len(x.data))-t.size; i += t.size {
+					x.edges = info.appendFields(x.edges, x.data, t.fields, i, int64(i/t.size))
+				}
 			}
 		case typeKindConservative:
 			for i := uint64(0); i < uint64(len(x.data)); i += d.ptrSize {

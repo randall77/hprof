@@ -78,10 +78,14 @@ func main() {
 		if x.typ != nil {
 			name := x.typ.name
 			switch x.kind {
-			case 1:
+			case typeKindArray:
 				name = fmt.Sprintf("{%d}%s", uint64(len(x.data))/x.typ.size, name)
-			case 2:
-				name = fmt.Sprintf("chan{%d}%s", (uint64(len(x.data))-d.hChanSize)/x.typ.size, name)
+			case typeKindChan:
+				if x.typ.size == 0 {
+					name = fmt.Sprintf("chan{?}%s", name)
+				} else {
+					name = fmt.Sprintf("chan{%d}%s", (uint64(len(x.data))-d.hChanSize)/x.typ.size, name)
+				}
 			}
 			// NOTE: sizes are max sizes given sizeclass - the actual size of a
 			// chan or array might be smaller.

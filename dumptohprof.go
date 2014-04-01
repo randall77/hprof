@@ -666,19 +666,27 @@ func ChanClass(t *Type, size uint64) uint64 {
 			uintptr = T_INT
 		}
 		p := prefix(size)
-		nelem := (size - d.hChanSize) / t.size
 		var jf []JavaField
 		for i := uint64(0); i < d.hChanSize; i += d.ptrSize {
 			// TODO: name these fields appropriately (len, cap, sendidx, recvidx,...)
 			jf = append(jf, JavaField{uintptr, fmt.Sprintf(p+"chanhdr", i)})
 		}
-		for i := uint64(0); i < nelem; i++ {
-			jf = appendJavaFields(jf, t, p, d.hChanSize+i*t.size, int64(i))
+		total := d.hChanSize
+		var name string
+		if t.size == 0 {
+			name = fmt.Sprintf("chan{?}%s", t.name)
+		} else {
+			nelem := (size - d.hChanSize) / t.size
+			name = fmt.Sprintf("chan{%d}%s", nelem, t.name)
+			for i := uint64(0); i < nelem; i++ {
+				jf = appendJavaFields(jf, t, p, d.hChanSize+i*t.size, int64(i))
+			}
+			total += nelem * t.size
 		}
-		jf = appendPad(jf, p, d.hChanSize+nelem*t.size, size-(d.hChanSize+nelem*t.size)) // pad to sizeclass
+		jf = appendPad(jf, p, total, size-total) // pad to sizeclass
 		if len(jf) < 0x10000 {
 			c = newId()
-			addClass(c, size, fmt.Sprintf("chan{%d}%s", nelem, t.name), jf)
+			addClass(c, size, name, jf)
 			javaFields[c] = jf
 		} else {
 			c = bigNoPtrArray
