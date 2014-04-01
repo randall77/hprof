@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"github.com/randall77/hprof/read"
 )
 
 // hprof constants
@@ -81,7 +82,7 @@ var go_class_ser uint32
 var java_lang_objectarray uint64
 
 // heap data
-var d *Dump
+var d *read.Dump
 
 // the full file
 var hprof []byte
@@ -93,29 +94,29 @@ var dump []byte
 var stringCache map[string]uint64
 
 // map from threads to thread serial numbers
-var threadSerialNumbers map[*GoRoutine]uint32
-var stackTraceSerialNumbers map[*GoRoutine]uint32
+var threadSerialNumbers map[*read.GoRoutine]uint32
+var stackTraceSerialNumbers map[*read.GoRoutine]uint32
 
 func main() {
 	flag.Parse()
 	args := flag.Args()
-	d = Read(args[0], args[1])
+	d = read.Read(args[0], args[1])
 
 	// some setup
 	usedIds = make(map[uint64]struct{}, 0)
-	for _, typ := range d.types {
-		usedIds[typ.addr] = struct{}{}
+	for _, typ := range d.Types {
+		usedIds[typ.Addr] = struct{}{}
 	}
-	for _, obj := range d.objects {
-		usedIds[obj.addr] = struct{}{}
+	for _, obj := range d.Objects {
+		usedIds[obj.Addr] = struct{}{}
 	}
 	stringCache = make(map[string]uint64, 0)
-	threadSerialNumbers = make(map[*GoRoutine]uint32, 0)
-	stackTraceSerialNumbers = make(map[*GoRoutine]uint32, 0)
+	threadSerialNumbers = make(map[*read.GoRoutine]uint32, 0)
+	stackTraceSerialNumbers = make(map[*read.GoRoutine]uint32, 0)
 
 	// std header
 	hprof = append(hprof, []byte("JAVA PROFILE 1.0.1\x00")...)
-	hprof = append32(hprof, 8) // IDs are 8 bytes (TODO: d.ptrSize?)
+	hprof = append32(hprof, 8) // IDs are 8 bytes (TODO: d.PtrSize?)
 	hprof = append32(hprof, 0) // dummy base time
 	hprof = append32(hprof, 0) // dummy base time
 
@@ -211,14 +212,14 @@ func addDummyThread() {
 }
 
 func addThreads() {
-	for _, t := range d.goroutines {
+	for _, t := range d.Goroutines {
 		tid := newSerial() // thread serial number
 		sid := newSerial() // stack trace serial number
 
 		// thread record
 		var body []byte
 		body = append32(body, tid)
-		body = appendId(body, t.addr)
+		body = appendId(body, t.Addr)
 		body = append32(body, sid)
 		body = appendId(body, addString("threadname"))
 		body = appendId(body, addString("threadgroup"))
@@ -227,10 +228,10 @@ func addThreads() {
 
 		// frames
 		n := 0
-		for f := t.bos; f != nil; f = f.parent {
+		for f := t.Bos; f != nil; f = f.Parent {
 			body = nil
-			body = appendId(body, f.addr)
-			body = appendId(body, addString(f.name))
+			body = appendId(body, f.Addr)
+			body = appendId(body, addString(f.Name))
 			body = appendId(body, addString(""))
 			body = appendId(body, addString("dummysource.go"))
 			body = append32(body, go_class_ser)
@@ -244,8 +245,8 @@ func addThreads() {
 		body = append32(body, sid)
 		body = append32(body, tid)
 		body = append32(body, uint32(n))
-		for f := t.bos; f != nil; f = f.parent {
-			body = appendId(body, f.addr)
+		for f := t.Bos; f != nil; f = f.Parent {
+			body = appendId(body, f.Addr)
 		}
 		addTag(HPROF_TRACE, body)
 
@@ -326,53 +327,53 @@ func addClass(id uint64, size uint64, name string, fields []JavaField) {
 
 // each global is represented as a java Class with a few static fields.
 // TODO: have a class per package with all globals from that package in it?
-func addGlobal(name string, kind fieldKind, data []byte) {
+func addGlobal(name string, kind read.FieldKind, data []byte) {
 	var names []string
 	var types []byte
 	var values [][]byte
 	uintptr := byte(T_LONG)
-	if d.ptrSize == 4 {
+	if d.PtrSize == 4 {
 		uintptr = T_INT
 	}
 	switch kind {
 	default:
 		// scalars - worth outputting anything?
 		return
-	case fieldKindPtr:
+	case read.FieldKindPtr:
 		names = append(names, "ptr")
 		types = append(types, T_CLASS)
-		values = append(values, data[:d.ptrSize])
-	case fieldKindString:
+		values = append(values, data[:d.PtrSize])
+	case read.FieldKindString:
 		names = append(names, "str")
 		types = append(types, T_CLASS)
-		values = append(values, data[:d.ptrSize])
+		values = append(values, data[:d.PtrSize])
 		names = append(names, "len")
 		types = append(types, uintptr)
-		values = append(values, data[d.ptrSize:2*d.ptrSize])
-	case fieldKindSlice:
+		values = append(values, data[d.PtrSize:2*d.PtrSize])
+	case read.FieldKindSlice:
 		names = append(names, "array")
 		types = append(types, T_CLASS)
-		values = append(values, data[:d.ptrSize])
+		values = append(values, data[:d.PtrSize])
 		names = append(names, "len")
 		types = append(types, uintptr)
-		values = append(values, data[d.ptrSize:2*d.ptrSize])
+		values = append(values, data[d.PtrSize:2*d.PtrSize])
 		names = append(names, "cap")
 		types = append(types, uintptr)
-		values = append(values, data[2*d.ptrSize:3*d.ptrSize])
-	case fieldKindIface:
+		values = append(values, data[2*d.PtrSize:3*d.PtrSize])
+	case read.FieldKindIface:
 		names = append(names, "itab")
 		types = append(types, T_CLASS)
-		values = append(values, data[:d.ptrSize])
+		values = append(values, data[:d.PtrSize])
 		names = append(names, "data")
 		types = append(types, T_CLASS)
-		values = append(values, data[d.ptrSize:2*d.ptrSize])
-	case fieldKindEface:
+		values = append(values, data[d.PtrSize:2*d.PtrSize])
+	case read.FieldKindEface:
 		names = append(names, "type")
 		types = append(types, T_CLASS)
-		values = append(values, data[:d.ptrSize])
+		values = append(values, data[:d.PtrSize])
 		names = append(names, "data")
 		types = append(types, T_CLASS)
-		values = append(values, data[d.ptrSize:2*d.ptrSize])
+		values = append(values, data[d.PtrSize:2*d.PtrSize])
 	}
 
 	// fix endianness of values
@@ -458,23 +459,23 @@ func appendPad(jf []JavaField, prefix string, base uint64, n uint64) []JavaField
 	return jf
 }
 
-func appendJavaFields(jf []JavaField, t *Type, prefix string, base uint64, idx int64) []JavaField {
+func appendJavaFields(jf []JavaField, t *read.Type, prefix string, base uint64, idx int64) []JavaField {
 	off := uint64(0)
 	uintptr := byte(T_LONG)
-	if d.ptrSize == 4 {
+	if d.PtrSize == 4 {
 		uintptr = T_INT
 	}
-	for _, f := range t.fields {
+	for _, f := range t.Fields {
 		// hprof format needs fields for the holes
-		if f.offset < off {
+		if f.Offset < off {
 			log.Fatal("out of order fields")
 		}
-		if f.offset > off {
-			jf = appendPad(jf, prefix, base+off, f.offset-off)
-			off = f.offset
+		if f.Offset > off {
+			jf = appendPad(jf, prefix, base+off, f.Offset-off)
+			off = f.Offset
 		}
 
-		name := f.name
+		name := f.Name
 		if idx >= 0 {
 			if name != "" {
 				name = fmt.Sprintf("%d.%s", idx, name)
@@ -482,79 +483,79 @@ func appendJavaFields(jf []JavaField, t *Type, prefix string, base uint64, idx i
 				name = fmt.Sprintf("%d", idx)
 			}
 		}
-		switch f.kind {
-		case fieldKindBool:
-			jf = append(jf, JavaField{T_BOOLEAN, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		switch f.Kind {
+		case read.FieldKindBool:
+			jf = append(jf, JavaField{T_BOOLEAN, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off++
-		case fieldKindUInt8:
-			jf = append(jf, JavaField{T_BYTE, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindUInt8:
+			jf = append(jf, JavaField{T_BYTE, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off++
-		case fieldKindSInt8:
-			jf = append(jf, JavaField{T_BYTE, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindSInt8:
+			jf = append(jf, JavaField{T_BYTE, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off++
-		case fieldKindUInt16:
-			jf = append(jf, JavaField{T_SHORT, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindUInt16:
+			jf = append(jf, JavaField{T_SHORT, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off += 2
-		case fieldKindSInt16:
-			jf = append(jf, JavaField{T_SHORT, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindSInt16:
+			jf = append(jf, JavaField{T_SHORT, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off += 2
-		case fieldKindUInt32:
-			jf = append(jf, JavaField{T_INT, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindUInt32:
+			jf = append(jf, JavaField{T_INT, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off += 4
-		case fieldKindSInt32:
-			jf = append(jf, JavaField{T_INT, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindSInt32:
+			jf = append(jf, JavaField{T_INT, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off += 4
-		case fieldKindUInt64:
-			jf = append(jf, JavaField{T_LONG, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindUInt64:
+			jf = append(jf, JavaField{T_LONG, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off += 8
-		case fieldKindSInt64:
-			jf = append(jf, JavaField{T_LONG, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindSInt64:
+			jf = append(jf, JavaField{T_LONG, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off += 8
-		case fieldKindFloat32:
-			jf = append(jf, JavaField{T_FLOAT, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindFloat32:
+			jf = append(jf, JavaField{T_FLOAT, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off += 4
-		case fieldKindFloat64:
-			jf = append(jf, JavaField{T_DOUBLE, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
+		case read.FieldKindFloat64:
+			jf = append(jf, JavaField{T_DOUBLE, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
 			off += 8
-		case fieldKindComplex64:
-			jf = append(jf, JavaField{T_FLOAT, fmt.Sprintf(prefix+"%s.real", base+f.offset, name)})
-			jf = append(jf, JavaField{T_FLOAT, fmt.Sprintf(prefix+"%s.imag", base+f.offset+4, name)})
+		case read.FieldKindComplex64:
+			jf = append(jf, JavaField{T_FLOAT, fmt.Sprintf(prefix+"%s.real", base+f.Offset, name)})
+			jf = append(jf, JavaField{T_FLOAT, fmt.Sprintf(prefix+"%s.imag", base+f.Offset+4, name)})
 			off += 8
-		case fieldKindComplex128:
-			jf = append(jf, JavaField{T_DOUBLE, fmt.Sprintf(prefix+"%s.real", base+f.offset, name)})
-			jf = append(jf, JavaField{T_DOUBLE, fmt.Sprintf(prefix+"%s.imag", base+f.offset+8, name)})
+		case read.FieldKindComplex128:
+			jf = append(jf, JavaField{T_DOUBLE, fmt.Sprintf(prefix+"%s.real", base+f.Offset, name)})
+			jf = append(jf, JavaField{T_DOUBLE, fmt.Sprintf(prefix+"%s.imag", base+f.Offset+8, name)})
 			off += 16
-		case fieldKindPtr:
-			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s", base+f.offset, name)})
-			off += d.ptrSize
-		case fieldKindString:
-			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.str", base+f.offset, name)})
-			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.len", base+f.offset+d.ptrSize, name)})
-			off += 2 * d.ptrSize
-		case fieldKindSlice:
-			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.array", base+f.offset, name)})
-			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.len", base+f.offset+d.ptrSize, name)})
-			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.cap", base+f.offset+2*d.ptrSize, name)})
-			off += 3 * d.ptrSize
+		case read.FieldKindPtr:
+			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s", base+f.Offset, name)})
+			off += d.PtrSize
+		case read.FieldKindString:
+			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.str", base+f.Offset, name)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.len", base+f.Offset+d.PtrSize, name)})
+			off += 2 * d.PtrSize
+		case read.FieldKindSlice:
+			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.array", base+f.Offset, name)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.len", base+f.Offset+d.PtrSize, name)})
+			jf = append(jf, JavaField{uintptr, fmt.Sprintf(prefix+"%s.cap", base+f.Offset+2*d.PtrSize, name)})
+			off += 3 * d.PtrSize
 		// Data fields of interfaces might be pointers, might not be.  hprof has
 		// no good way to represent this.  We always choose pointer.
-		case fieldKindIface:
-			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.itab", base+f.offset, name)})
-			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.data", base+f.offset+d.ptrSize, name)})
-			off += 2 * d.ptrSize
-		case fieldKindEface:
-			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.type", base+f.offset, name)})
-			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.data", base+f.offset+d.ptrSize, name)})
-			off += 2 * d.ptrSize
+		case read.FieldKindIface:
+			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.itab", base+f.Offset, name)})
+			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.data", base+f.Offset+d.PtrSize, name)})
+			off += 2 * d.PtrSize
+		case read.FieldKindEface:
+			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.type", base+f.Offset, name)})
+			jf = append(jf, JavaField{T_CLASS, fmt.Sprintf(prefix+"%s.data", base+f.Offset+d.PtrSize, name)})
+			off += 2 * d.PtrSize
 		default:
-			log.Fatalf("unknown field kind %d\n", f.kind)
+			log.Fatalf("unknown field kind %d\n", f.Kind)
 		}
 	}
-	if off > t.size {
+	if off > t.Size {
 		log.Fatalf("too much field data")
 	}
-	if off < t.size {
-		jf = appendPad(jf, prefix, base+off, t.size-off)
+	if off < t.Size {
+		jf = appendPad(jf, prefix, base+off, t.Size-off)
 	}
 	return jf
 }
@@ -566,16 +567,16 @@ var javaFields map[uint64][]JavaField = make(map[uint64][]JavaField, 0)
 // stdClass maps from type addr to the Java class object we use to represent that type
 var stdClass map[uint64]uint64 = make(map[uint64]uint64, 0)
 
-func StdClass(t *Type, size uint64) uint64 {
+func StdClass(t *read.Type, size uint64) uint64 {
 	p := prefix(size)
-	c := stdClass[t.addr]
+	c := stdClass[t.Addr]
 	if c == 0 {
 		var jf []JavaField
 		jf = appendJavaFields(jf, t, p, 0, -1)
-		jf = appendPad(jf, p, t.size, size-t.size) // pad to sizeclass
+		jf = appendPad(jf, p, t.Size, size-t.Size) // pad to sizeclass
 		if len(jf) < 0x10000 {
 			c = newId()
-			addClass(c, size, t.name, jf)
+			addClass(c, size, t.Name, jf)
 			javaFields[c] = jf
 		} else {
 			c = bigNoPtrArray
@@ -585,7 +586,7 @@ func StdClass(t *Type, size uint64) uint64 {
 				}
 			}
 		}
-		stdClass[t.addr] = c
+		stdClass[t.Addr] = c
 	}
 	return c
 }
@@ -621,20 +622,20 @@ type ArrayKey struct {
 
 var arrayClass map[ArrayKey]uint64 = make(map[ArrayKey]uint64, 0)
 
-func ArrayClass(t *Type, size uint64) uint64 {
-	k := ArrayKey{t.addr, size}
+func ArrayClass(t *read.Type, size uint64) uint64 {
+	k := ArrayKey{t.Addr, size}
 	c := arrayClass[k]
 	if c == 0 {
 		p := prefix(size)
-		nelem := size / t.size
+		nelem := size / t.Size
 		var jf []JavaField
 		for i := uint64(0); i < nelem; i++ {
-			jf = appendJavaFields(jf, t, p, i*t.size, int64(i))
+			jf = appendJavaFields(jf, t, p, i*t.Size, int64(i))
 		}
-		jf = appendPad(jf, p, nelem*t.size, size-nelem*t.size) // pad to sizeclass
+		jf = appendPad(jf, p, nelem*t.Size, size-nelem*t.Size) // pad to sizeclass
 		if len(jf) < 0x10000 {
 			c = newId()
-			addClass(c, size, fmt.Sprintf("array{%d}%s", nelem, t.name), jf)
+			addClass(c, size, fmt.Sprintf("array{%d}%s", nelem, t.Name), jf)
 			javaFields[c] = jf
 		} else {
 			c = bigNoPtrArray
@@ -657,31 +658,31 @@ type ChanKey struct {
 
 var chanClass map[ChanKey]uint64 = make(map[ChanKey]uint64, 0)
 
-func ChanClass(t *Type, size uint64) uint64 {
-	k := ChanKey{t.addr, size}
+func ChanClass(t *read.Type, size uint64) uint64 {
+	k := ChanKey{t.Addr, size}
 	c := chanClass[k]
 	if c == 0 {
 		uintptr := byte(T_LONG)
-		if d.ptrSize == 4 {
+		if d.PtrSize == 4 {
 			uintptr = T_INT
 		}
 		p := prefix(size)
 		var jf []JavaField
-		for i := uint64(0); i < d.hChanSize; i += d.ptrSize {
+		for i := uint64(0); i < d.HChanSize; i += d.PtrSize {
 			// TODO: name these fields appropriately (len, cap, sendidx, recvidx,...)
 			jf = append(jf, JavaField{uintptr, fmt.Sprintf(p+"chanhdr", i)})
 		}
-		total := d.hChanSize
+		total := d.HChanSize
 		var name string
-		if t.size == 0 {
-			name = fmt.Sprintf("chan{?}%s", t.name)
+		if t.Size == 0 {
+			name = fmt.Sprintf("chan{?}%s", t.Name)
 		} else {
-			nelem := (size - d.hChanSize) / t.size
-			name = fmt.Sprintf("chan{%d}%s", nelem, t.name)
+			nelem := (size - d.HChanSize) / t.Size
+			name = fmt.Sprintf("chan{%d}%s", nelem, t.Name)
 			for i := uint64(0); i < nelem; i++ {
-				jf = appendJavaFields(jf, t, p, d.hChanSize+i*t.size, int64(i))
+				jf = appendJavaFields(jf, t, p, d.HChanSize+i*t.Size, int64(i))
 			}
-			total += nelem * t.size
+			total += nelem * t.Size
 		}
 		jf = appendPad(jf, p, total, size-total) // pad to sizeclass
 		if len(jf) < 0x10000 {
@@ -712,35 +713,36 @@ func addHeapDump() {
 	var data []byte
 
 	// output each object as an instance
-	for _, x := range d.objects {
-		if len(x.data) >= 8<<32 {
+	for _, x := range d.Objects {
+		if len(x.Data) >= 8<<32 {
 			// file format can't record objects this big.  TODO: error/warning?  Truncate?
 			continue
 		}
 
 		// figure out what class to use for this object
 		var c uint64
-		if x.typ == nil {
-			c = NoPtrClass(uint64(len(x.data)))
+		if x.Typ == nil {
+			c = NoPtrClass(uint64(len(x.Data)))
 		} else {
-			switch x.kind {
-			case typeKindObject:
-				c = StdClass(x.typ, uint64(len(x.data)))
-			case typeKindArray:
-				c = ArrayClass(x.typ, uint64(len(x.data)))
-			case typeKindChan:
-				c = ChanClass(x.typ, uint64(len(x.data)))
+			switch x.Kind {
+			case read.TypeKindObject:
+				c = StdClass(x.Typ, uint64(len(x.Data)))
+			case read.TypeKindArray:
+				c = ArrayClass(x.Typ, uint64(len(x.Data)))
+			case read.TypeKindChan:
+				c = ChanClass(x.Typ, uint64(len(x.Data)))
+			// TODO: TypeKindConservative
 			default:
 				log.Fatal("unhandled kind")
 			}
 		}
 
 		// make a copy of the object data so we can modify it
-		data = append(data[:0], x.data...)
+		data = append(data[:0], x.Data...)
 
 		// Any pointers to objects get adjusted to point to the object head.
-		for _, e := range x.edges {
-			writePtr(data[e.fromoffset:], e.to.addr)
+		for _, e := range x.Edges {
+			writePtr(data[e.FromOffset:], e.To.Addr)
 		}
 
 		// convert to big-endian representation
@@ -749,7 +751,7 @@ func addHeapDump() {
 				bigEndian8(data[i:])
 			}
 		} else if c == bigPtrArray {
-			for i := uint64(0); i < uint64(len(data)); i += d.ptrSize {
+			for i := uint64(0); i < uint64(len(data)); i += d.PtrSize {
 				bigEndianP(data[i:])
 			}
 		} else {
@@ -758,7 +760,7 @@ func addHeapDump() {
 				switch f.kind {
 				case T_CLASS:
 					bigEndianP(data[off:])
-					off += d.ptrSize
+					off += d.PtrSize
 				case T_BOOLEAN:
 					off++
 				case T_FLOAT:
@@ -787,39 +789,39 @@ func addHeapDump() {
 		// dump object header
 		if c == bigNoPtrArray {
 			dump = append(dump, HPROF_GC_PRIM_ARRAY_DUMP)
-			dump = appendId(dump, x.addr)
+			dump = appendId(dump, x.Addr)
 			dump = append32(dump, stack_trace_serial_number)
-			dump = append32(dump, uint32(len(x.data)/8))
+			dump = append32(dump, uint32(len(x.Data)/8))
 			dump = append(dump, T_LONG)
 		} else if c == bigPtrArray {
 			dump = append(dump, HPROF_GC_OBJ_ARRAY_DUMP)
-			dump = appendId(dump, x.addr)
+			dump = appendId(dump, x.Addr)
 			dump = append32(dump, stack_trace_serial_number)
-			dump = append32(dump, uint32(len(x.data)/8))
+			dump = append32(dump, uint32(len(x.Data)/8))
 			dump = appendId(dump, java_lang_objectarray)
 		} else {
 			dump = append(dump, HPROF_GC_INSTANCE_DUMP)
-			dump = appendId(dump, x.addr)
+			dump = appendId(dump, x.Addr)
 			dump = append32(dump, stack_trace_serial_number)
 			dump = appendId(dump, c)
-			dump = append32(dump, uint32(len(x.data)))
+			dump = append32(dump, uint32(len(x.Data)))
 		}
 		// dump object data
 		dump = append(dump, data...)
 	}
 
 	// output threads
-	for _, t := range d.goroutines {
+	for _, t := range d.Goroutines {
 		dump = append(dump, HPROF_GC_ROOT_THREAD_OBJ)
-		dump = appendId(dump, t.addr)
+		dump = appendId(dump, t.Addr)
 		dump = append32(dump, threadSerialNumbers[t])
 		dump = append32(dump, stackTraceSerialNumbers[t])
 	}
 
 	// stack roots
-	for _, t := range d.goroutines {
-		for f := t.bos; f != nil; f = f.parent {
-			for _, e := range f.edges {
+	for _, t := range d.Goroutines {
+		for f := t.Bos; f != nil; f = f.Parent {
+			for _, e := range f.Edges {
 				// we make one "thread" per field, because the roots
 				// get identified by "thread" in jhat.
 				id := newId()      // id of thread object
@@ -828,7 +830,7 @@ func addHeapDump() {
 
 				// this is the class of the thread object.  Its name
 				// is what gets displayed with the root entry.
-				addClass(cid, 0, f.name+"."+e.fieldname, nil)
+				addClass(cid, 0, f.Name+"."+e.Fieldname, nil)
 
 				// new thread object
 				dump = append(dump, HPROF_GC_INSTANCE_DUMP)
@@ -845,28 +847,28 @@ func addHeapDump() {
 
 				// finally, make root come from this thread
 				dump = append(dump, HPROF_GC_ROOT_JAVA_FRAME)
-				dump = appendId(dump, e.to.addr)
+				dump = appendId(dump, e.To.Addr)
 				dump = append32(dump, tid)
 				dump = append32(dump, 0) // depth
 			}
 		}
 	}
 	// data roots
-	for _, x := range []*Data{d.data, d.bss} {
+	for _, x := range []*read.Data{d.Data, d.Bss} {
 		// adjust edges to point to object beginnings
-		for _, e := range x.edges {
-			writePtr(x.data[e.fromoffset:], e.to.addr)
+		for _, e := range x.Edges {
+			writePtr(x.Data[e.FromOffset:], e.To.Addr)
 		}
-		for _, f := range x.fields {
-			addGlobal(f.name, f.kind, x.data[f.offset:])
+		for _, f := range x.Fields {
+			addGlobal(f.Name, f.Kind, x.Data[f.Offset:])
 		}
 	}
-	for _, t := range d.otherroots {
-		if t.e.to == nil {
+	for _, t := range d.Otherroots {
+		if t.E.To == nil {
 			continue
 		}
 		dump = append(dump, HPROF_GC_ROOT_UNKNOWN)
-		dump = appendId(dump, t.e.to.addr)
+		dump = appendId(dump, t.E.To.Addr)
 	}
 
 	addTag(HPROF_HEAP_DUMP, dump)
@@ -887,25 +889,25 @@ func appendId(b []byte, x uint64) []byte {
 }
 
 func bigEndian2(x []byte) {
-	if d.order == binary.BigEndian {
+	if d.Order == binary.BigEndian {
 		return
 	}
 	x[0], x[1] = x[1], x[0]
 }
 func bigEndian4(x []byte) {
-	if d.order == binary.BigEndian {
+	if d.Order == binary.BigEndian {
 		return
 	}
 	x[0], x[1], x[2], x[3] = x[3], x[2], x[1], x[0]
 }
 func bigEndian8(x []byte) {
-	if d.order == binary.BigEndian {
+	if d.Order == binary.BigEndian {
 		return
 	}
 	x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] = x[7], x[6], x[5], x[4], x[3], x[2], x[1], x[0]
 }
 func bigEndianP(x []byte) {
-	if d.ptrSize == 4 {
+	if d.PtrSize == 4 {
 		bigEndian4(x)
 	} else {
 		bigEndian8(x)
@@ -914,17 +916,17 @@ func bigEndianP(x []byte) {
 
 func writePtr(b []byte, v uint64) {
 	switch {
-	case d.order == binary.LittleEndian && d.ptrSize == 4:
+	case d.Order == binary.LittleEndian && d.PtrSize == 4:
 		b[0] = byte(v >> 0)
 		b[1] = byte(v >> 8)
 		b[2] = byte(v >> 16)
 		b[3] = byte(v >> 24)
-	case d.order == binary.BigEndian && d.ptrSize == 4:
+	case d.Order == binary.BigEndian && d.PtrSize == 4:
 		b[3] = byte(v >> 0)
 		b[2] = byte(v >> 8)
 		b[1] = byte(v >> 16)
 		b[0] = byte(v >> 24)
-	case d.order == binary.LittleEndian && d.ptrSize == 8:
+	case d.Order == binary.LittleEndian && d.PtrSize == 8:
 		b[0] = byte(v >> 0)
 		b[1] = byte(v >> 8)
 		b[2] = byte(v >> 16)
@@ -933,7 +935,7 @@ func writePtr(b []byte, v uint64) {
 		b[5] = byte(v >> 40)
 		b[6] = byte(v >> 48)
 		b[7] = byte(v >> 56)
-	case d.order == binary.BigEndian && d.ptrSize == 8:
+	case d.Order == binary.BigEndian && d.PtrSize == 8:
 		b[7] = byte(v >> 0)
 		b[6] = byte(v >> 8)
 		b[5] = byte(v >> 16)
@@ -943,6 +945,6 @@ func writePtr(b []byte, v uint64) {
 		b[1] = byte(v >> 48)
 		b[0] = byte(v >> 56)
 	default:
-		log.Fatal("unsupported order=%v ptrSize=%d", d.order, d.ptrSize)
+		log.Fatal("unsupported order=%v PtrSize=%d", d.Order, d.PtrSize)
 	}
 }
