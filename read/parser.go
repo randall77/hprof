@@ -993,8 +993,19 @@ func namefields(d *Dump, execname string) {
 		// Overwrite the fields from the dump with fields from the dwarf info.
 		// Dwarf should have the same info, plus it gives us field names and
 		// all the non-pointer fields.
+		m := make(map[uint64]Field)
+		for _, f := range dt.Fields() {
+			m[f.Offset] = f
+		}
+		for _, f := range t.Fields {
+			if _, ok := m[f.Offset]; !ok {
+				log.Fatalf("dwarf missing field %s.%d", t.Name, f.Offset)
+			}
+			if m[f.Offset].Kind != f.Kind {
+				log.Fatalf("dwarf field kind doesn't match dump kind %s.%d dump=%d dwarf=%d\n", t.Name, f.Offset, m[f.Offset].Kind, f.Kind)
+			}
+		}
 		t.Fields = dt.Fields()
-		// TODO: check compatibility between dwarf and raw dump
 	}
 
 	// name all frame fields
