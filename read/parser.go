@@ -643,16 +643,26 @@ func (t *dwarfStructType) Fields() []Field {
 		t.fields = append(t.fields, Field{FieldKindIface, 0, ""})
 	case t.name == "runtime.eface":
 		t.fields = append(t.fields, Field{FieldKindEface, 0, ""})
-	case len(t.name) >= 2 && t.name[:2] == "[]":
-		t.fields = append(t.fields, Field{FieldKindSlice, 0, ""})
 	default:
-		for _, m := range t.members {
-			if len(t.name) >= 11 && t.name[:11] == "map.bucket[" && m.name == "data" {
-				// dummy field used in the implementation - it overlaps with the
-				// dwarf-added keys&values fields.  We should get the dwarf outputter to squash this field.
-				// For now, we ignore it.
-				continue
+		// Detect slices.  TODO: This could be fooled by the right user
+		// code, so find a better way.
+		if len(t.members) == 3 &&
+			t.members[0].name == "array" &&
+			t.members[1].name == "len" &&
+			t.members[2].name == "cap" &&
+			t.members[0].offset == 0 &&
+			t.members[1].offset == t.members[0].type_.Size() &&
+			t.members[2].offset == 2*t.members[0].type_.Size() {
+			_, aok := t.members[0].type_.(*dwarfPtrType)
+			l, lok := t.members[1].type_.(*dwarfBaseType)
+			c, cok := t.members[2].type_.(*dwarfBaseType)
+			if aok && lok && cok && l.encoding == dw_ate_unsigned && c.encoding == dw_ate_unsigned {
+				t.fields = append(t.fields, Field{FieldKindSlice, 0, ""})
+				break
 			}
+		}
+		
+		for _, m := range t.members {
 			for _, f := range m.type_.Fields() {
 				t.fields = append(t.fields, Field{f.Kind, m.offset + f.Offset, joinNames(m.name, f.Name)})
 			}
@@ -744,6 +754,7 @@ func typeMap(d *Dump, w *dwarf.Data) map[dwarf.Offset]dwarfType {
 		case dwarf.TagSubroutineType:
 			x := new(dwarfFuncType)
 			x.name = e.Val(dwarf.AttrName).(string)
+			x.size = d.PtrSize
 			t[e.Offset] = x
 		}
 	}
@@ -993,8 +1004,19 @@ func namefields(d *Dump, execname string) {
 		// Overwrite the fields from the dump with fields from the dwarf info.
 		// Dwarf should have the same info, plus it gives us field names and
 		// all the non-pointer fields.
+		m := make(map[uint64]Field)
+		for _, f := range dt.Fields() {
+			m[f.Offset] = f
+		}
+		for _, f := range t.Fields {
+			if _, ok := m[f.Offset]; !ok {
+				log.Fatalf("dwarf missing field %s.%d", t.Name, f.Offset)
+			}
+			if m[f.Offset].Kind != f.Kind {
+				log.Fatalf("dwarf field kind doesn't match dump kind %s.%d dwarf=%d dump=%d\n", t.Name, f.Offset, m[f.Offset].Kind, f.Kind)
+			}
+		}
 		t.Fields = dt.Fields()
-		// TODO: check compatibility between dwarf and raw dump
 	}
 
 	// name all frame fields
