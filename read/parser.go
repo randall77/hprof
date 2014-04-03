@@ -238,7 +238,13 @@ type StackFrame struct {
 	fields    []Field
 }
 
-func readUint64(r io.ByteReader) uint64 {
+// both an io.Reader and an io.ByteReader
+type Reader interface {
+     Read(p []byte) (n int, err error)
+     ReadByte() (c byte, err error)
+}
+
+func readUint64(r Reader) uint64 {
 	x, err := binary.ReadUvarint(r)
 	if err != nil {
 		log.Fatal(err)
@@ -246,29 +252,25 @@ func readUint64(r io.ByteReader) uint64 {
 	return x
 }
 
-func readNBytes(r io.ByteReader, n uint64) []byte {
+func readNBytes(r Reader, n uint64) []byte {
 	s := make([]byte, n)
-	// TODO: faster
-	for i := range s {
-		b, err := r.ReadByte()
-		if err != nil {
-			log.Fatal(err)
-		}
-		s[i] = b
+	_, err := io.ReadFull(r, s)
+	if err != nil {
+		log.Fatal(err)
 	}
 	return s
 }
 
-func readBytes(r io.ByteReader) []byte {
+func readBytes(r Reader) []byte {
 	n := readUint64(r)
 	return readNBytes(r, n)
 }
 
-func readString(r io.ByteReader) string {
+func readString(r Reader) string {
 	return string(readBytes(r))
 }
 
-func readBool(r io.ByteReader) bool {
+func readBool(r Reader) bool {
 	b, err := r.ReadByte()
 	if err != nil {
 		log.Fatal(err)
@@ -276,7 +278,7 @@ func readBool(r io.ByteReader) bool {
 	return b != 0
 }
 
-func readFields(r io.ByteReader) []Field {
+func readFields(r Reader) []Field {
 	var x []Field
 	for {
 		kind := FieldKind(readUint64(r))
