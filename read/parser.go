@@ -990,10 +990,7 @@ func namefields(d *Dump, execname string) {
 	w := getDwarf(execname)
 	t := typeMap(d, w)
 
-	// name fields fields in all types
-	// TODO: what about identically named types?  There doesn't seem to be
-	// any way to 1-1 match up runtime types and dwarf types if two types
-	// have the same name.
+	// name fields in all types
 	m := make(map[string]dwarfType)
 	for _, x := range t {
 		m[x.Name()] = x
@@ -1001,24 +998,48 @@ func namefields(d *Dump, execname string) {
 	for _, t := range d.Types {
 		dt := m[t.Name]
 		if dt == nil {
+			// A type in the dump has no entry in the Dwarf info.
+			// This can happen for unexported types, e.g. reflect.ptrGC.
+			//log.Printf("type %s has no dwarf info", t.Name)
 			continue
 		}
-		// Overwrite the fields from the dump with fields from the dwarf info.
-		// Dwarf should have the same info, plus it gives us field names and
-		// all the non-pointer fields.
-		m := make(map[uint64]Field)
-		for _, f := range dt.Fields() {
-			m[f.Offset] = f
+		// Check that the Dwarf type is consistent with the type we got from
+		// the heap dump.  The heap dump type is the root truth, but it is
+		// missing non-pointer-bearing fields and has no field names.  If the
+		// Dwarf type is consistent with the heap dump type, then we'll use
+		// the fields from the Dwarf type instead.
+		consistent := true
+
+		// load Dwarf fields into layout
+		df := dt.Fields()
+		layout := make(map[uint64]Field)
+		for _, f := range df {
+			layout[f.Offset] = f
 		}
+		// A field in the heap dump must match the corresponding Dwarf field
+		// in both kind and offset.
 		for _, f := range t.Fields {
-			if _, ok := m[f.Offset]; !ok {
-				log.Fatalf("dwarf missing field %s.%d", t.Name, f.Offset)
+			if layout[f.Offset].Kind != f.Kind {
+				log.Printf("dwarf field kind doesn't match dump kind %s.%d dwarf=%d dump=%d", t.Name, f.Offset, layout[f.Offset].Kind, f.Kind)
+				consistent = false
 			}
-			if m[f.Offset].Kind != f.Kind {
-				log.Fatalf("dwarf field kind doesn't match dump kind %s.%d dwarf=%d dump=%d\n", t.Name, f.Offset, m[f.Offset].Kind, f.Kind)
+			delete(layout, f.Offset)
+		}
+		// all remaining fields must not be pointer-containing
+		for _, f := range layout {
+			switch f.Kind {
+			case FieldKindPtr, FieldKindString, FieldKindSlice, FieldKindIface, FieldKindEface:
+				log.Printf("dwarf type has additional ptr field %s %d %d", f.Name, f.Offset, f.Kind)
+				consistent = false
 			}
 		}
-		t.Fields = dt.Fields()
+		if consistent {
+			// Dwarf info looks good, overwrite the fields from the dump
+			// with fields from the Dwarf info.
+			t.Fields = df
+		} else {
+			log.Printf("inconsistent type for %s\n", t.Name)
+		}
 	}
 
 	// name all frame fields
