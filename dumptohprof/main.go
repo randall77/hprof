@@ -7,9 +7,9 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"github.com/randall77/hprof/read"
 	"log"
 	"os"
-	"github.com/randall77/hprof/read"
 )
 
 // hprof constants
@@ -100,7 +100,14 @@ var stackTraceSerialNumbers map[*read.GoRoutine]uint32
 func main() {
 	flag.Parse()
 	args := flag.Args()
-	d = read.Read(args[0], args[1])
+	var outfile string
+	if len(args) == 2 {
+		d = read.Read(args[0], "")
+		outfile = args[1]
+	} else {
+		d = read.Read(args[0], args[1])
+		outfile = args[2]
+	}
 
 	// some setup
 	usedIds = make(map[uint64]struct{}, 0)
@@ -144,7 +151,7 @@ func main() {
 	addHeapDump()
 
 	// write final file to output
-	file, err := os.Create(args[2])
+	file, err := os.Create(outfile)
 	if err != nil {
 		log.Fatal(err)
 	}

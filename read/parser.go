@@ -661,7 +661,7 @@ func (t *dwarfStructType) Fields() []Field {
 				break
 			}
 		}
-		
+
 		for _, m := range t.members {
 			for _, f := range m.type_.Fields() {
 				t.fields = append(t.fields, Field{f.Kind, m.offset + f.Offset, joinNames(m.name, f.Name)})
@@ -1178,7 +1178,9 @@ func link(d *Dump) {
 
 func Read(dumpname, execname string) *Dump {
 	d := rawRead(dumpname)
-	namefields(d, execname)
+	if execname != "" {
+		namefields(d, execname)
+	}
 	link(d)
 	return d
 }

@@ -9,7 +9,12 @@ import (
 func main() {
 	flag.Parse()
 	args := flag.Args()
-	d := read.Read(args[0], args[1])
+	var d *read.Dump
+	if len(args) == 2 {
+		d = read.Read(args[0], args[1])
+	} else {
+		d = read.Read(args[0], "")
+	}
 
 	// eliminate unreachable objects
 	// TODO: have reader do this?
