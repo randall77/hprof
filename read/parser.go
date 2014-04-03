@@ -1084,6 +1084,9 @@ func nameWithDwarf(d *Dump, execname string) {
 				name := locals[localKey{r.Name, uint64(len(r.Data)) - f.Offset}]
 				if name == "" && c != nil {
 					name = args[localKey{c.Name, f.Offset}]
+					if name != "" {
+						name = "outarg." + name
+					}
 				}
 				if name == "" {
 					name = fmt.Sprintf("~%d", f.Offset)
