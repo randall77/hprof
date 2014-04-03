@@ -240,8 +240,8 @@ type StackFrame struct {
 
 // both an io.Reader and an io.ByteReader
 type Reader interface {
-     Read(p []byte) (n int, err error)
-     ReadByte() (c byte, err error)
+	Read(p []byte) (n int, err error)
+	ReadByte() (c byte, err error)
 }
 
 func readUint64(r Reader) uint64 {
@@ -852,11 +852,47 @@ func localsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) map[localKe
 	return m
 }
 
-// argsMap returns a map from function name to a *Heap.  The heap
-// contains pairs (x,y) where x is the distance above parentaddr of
-// the start of that variable, and y is the name of the variable.
-func argsMap(d *Dump, w *dwarf.Data) map[string]*Heap {
-	return nil
+// Makes a map from <function name, offset in arg area> to name of field.
+func argsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) map[localKey]string {
+	m := make(map[localKey]string, 0)
+	r := w.Reader()
+	var funcname string
+	for {
+		e, err := r.Next()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if e == nil {
+			break
+		}
+		switch e.Tag {
+		case dwarf.TagSubprogram:
+			funcname = e.Val(dwarf.AttrName).(string)
+		case dwarf.TagFormalParameter:
+			if e.Val(dwarf.AttrName) == nil {
+				continue
+			}
+			name := e.Val(dwarf.AttrName).(string)
+			typ := t[e.Val(dwarf.AttrType).(dwarf.Offset)]
+			loc := e.Val(dwarf.AttrLocation).([]uint8)
+			if len(loc) == 0 || loc[0] != dw_op_call_frame_cfa {
+				break
+			}
+			var offset int64
+			if len(loc) == 1 {
+				offset = 0
+			} else if len(loc) >= 3 && loc[1] == dw_op_consts && loc[len(loc)-1] == dw_op_plus {
+				loc, offset = readSleb(loc[2 : len(loc)-1])
+				if len(loc) != 0 {
+					break
+				}
+			}
+			for _, f := range typ.Fields() {
+				m[localKey{funcname, uint64(offset)}] = joinNames(name, f.Name)
+			}
+		}
+	}
+	return m
 }
 
 // map from global address to Field at that address
@@ -986,7 +1022,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 }
 
 // Names the fields it can for better debugging output
-func namefields(d *Dump, execname string) {
+func nameWithDwarf(d *Dump, execname string) {
 	w := getDwarf(execname)
 	t := typeMap(d, w)
 
@@ -1021,18 +1057,42 @@ func namefields(d *Dump, execname string) {
 		t.Fields = dt.Fields()
 	}
 
+	// link up frames in sequence
+	// TODO: already do this later in link
+	frames := make(map[frameKey]*StackFrame, len(d.Frames))
+	for _, x := range d.Frames {
+		frames[frameKey{x.Addr, x.Depth}] = x
+	}
+	for _, f := range d.Frames {
+		if f.Depth == 0 {
+			continue
+		}
+		g := frames[frameKey{f.childaddr, f.Depth - 1}]
+		g.Parent = f
+	}
+	for _, g := range d.Goroutines {
+		g.Bos = frames[frameKey{g.bosaddr, 0}]
+	}
+
 	// name all frame fields
 	locals := localsMap(d, w, t)
-	for _, r := range d.Frames {
-		for i, f := range r.fields {
-			name := locals[localKey{r.Name, uint64(len(r.Data)) - f.Offset}]
-			if name == "" {
-				name = fmt.Sprintf("~%d", f.Offset)
+	args := argsMap(d, w, t)
+	for _, g := range d.Goroutines {
+		var c *StackFrame
+		for r := g.Bos; r != nil; r = r.Parent {
+			for i, f := range r.fields {
+				name := locals[localKey{r.Name, uint64(len(r.Data)) - f.Offset}]
+				if name == "" && c != nil {
+					name = args[localKey{c.Name, f.Offset}]
+				}
+				if name == "" {
+					name = fmt.Sprintf("~%d", f.Offset)
+				}
+				r.fields[i].Name = name
 			}
-			r.fields[i].Name = name
+			c = r
 		}
 	}
-	// TODO: argsmap
 
 	// naming for globals
 	globals := globalsMap(d, w, t)
@@ -1178,10 +1238,34 @@ func link(d *Dump) {
 	}
 }
 
+func nameFallback(d *Dump) {
+	// No dwarf info, just name generically
+	for _, t := range d.Types {
+		for i := range t.Fields {
+			t.Fields[i].Name = fmt.Sprintf("field%d", i)
+		}
+	}
+	// name all frame fields
+	for _, r := range d.Frames {
+		for i := range r.fields {
+			r.fields[i].Name = fmt.Sprintf("var%d", i)
+		}
+	}
+	// name all globals
+	for i := range d.Data.Fields {
+		d.Data.Fields[i].Name = fmt.Sprintf("data%d", i)
+	}
+	for i := range d.Bss.Fields {
+		d.Bss.Fields[i].Name = fmt.Sprintf("bss%d", i)
+	}
+}
+
 func Read(dumpname, execname string) *Dump {
 	d := rawRead(dumpname)
 	if execname != "" {
-		namefields(d, execname)
+		nameWithDwarf(d, execname)
+	} else {
+		nameFallback(d)
 	}
 	link(d)
 	return d
