@@ -399,7 +399,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 
 	ft := fullType{x.Typ, x.Kind, x.Size()}
 	if err := objTemplate.Execute(w, objInfo{x.Addr, ft.link(), x.Size(), fields(x), referrers[x]}); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
@@ -477,7 +477,7 @@ func typeHandler(w http.ResponseWriter, r *http.Request) {
 	ft := fullType{t, read.TypeKind(kind), size}
 
 	if err := typeTemplate.Execute(w, typeInfo{ft.name(), size, byType[ft].objects}); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
@@ -535,7 +535,7 @@ func histoHandler(w http.ResponseWriter, r *http.Request) {
 	sort.Sort(ByBytes(s))
 
 	if err := histoTemplate.Execute(w, s); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
@@ -570,7 +570,7 @@ Heap objects: {{len .Objects}}
 
 func mainHandler(w http.ResponseWriter, r *http.Request) {
 	if err := mainTemplate.Execute(w, d); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
@@ -621,7 +621,7 @@ func globalsHandler(w http.ResponseWriter, r *http.Request) {
 		f = append(f, getFields(x.Data, x.Fields, emap, 0)...)
 	}
 	if err := globalsTemplate.Execute(w, f); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
@@ -668,7 +668,7 @@ func othersHandler(w http.ResponseWriter, r *http.Request) {
 		f = append(f, Field{x.Description, "unknown", edgeLink(x.E)})
 	}
 	if err := othersTemplate.Execute(w, f); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
@@ -739,7 +739,7 @@ func goListHandler(w http.ResponseWriter, r *http.Request) {
 	// sort by state
 	sort.Sort(ByState(i))
 	if err := goListTemplate.Execute(w, i); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
@@ -833,7 +833,7 @@ func goHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := goTemplate.Execute(w, i); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
@@ -933,7 +933,7 @@ func frameHandler(w http.ResponseWriter, r *http.Request) {
 	i.Vars = getFields(f.Data, f.Fields, emap, 0)
 
 	if err := frameTemplate.Execute(w, i); err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 }
 
