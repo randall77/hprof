@@ -107,7 +107,7 @@ type Edge struct {
 	FromOffset uint64  // offset in source object where ptr was found
 	ToOffset   uint64  // offset in destination object where ptr lands
 
-	// name of field / offset within field, if known
+	// name of field / offset within field of source object, if known
 	FieldName   string
 	FieldOffset uint64
 }
@@ -120,6 +120,10 @@ type Object struct {
 
 	Addr    uint64
 	typaddr uint64
+}
+
+func (x *Object) Size() uint64 {
+	return uint64(len(x.Data))
 }
 
 type OtherRoot struct {
@@ -226,7 +230,7 @@ type GoRoutine struct {
 type StackFrame struct {
 	Name      string
 	Parent    *StackFrame
-	goroutine *GoRoutine
+	Goroutine *GoRoutine
 	Depth     uint64
 	Data      []byte
 	Edges     []Edge
@@ -235,7 +239,7 @@ type StackFrame struct {
 	childaddr uint64
 	entry     uint64
 	pc        uint64
-	fields    []Field
+	Fields    []Field
 }
 
 // both an io.Reader and an io.ByteReader
@@ -358,7 +362,7 @@ func rawRead(filename string) *Dump {
 			t.entry = readUint64(r)
 			t.pc = readUint64(r)
 			t.Name = readString(r)
-			t.fields = readFields(r)
+			t.Fields = readFields(r)
 			d.Frames = append(d.Frames, t)
 		case tagParams:
 			if readUint64(r) == 0 {
@@ -1009,8 +1013,8 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 			if tp != 0 {
 				t := info.itabs[tp]
 				if t == nil {
-					//log.Fatal("can't find iface tab")
-					continue
+					log.Fatal("can't find iface tab")
+					//continue
 				}
 				if t.ptr {
 					edges = info.appendEdge(edges, data, off+info.dump.PtrSize, f, arrayidx)
@@ -1101,7 +1105,7 @@ func nameWithDwarf(d *Dump, execname string) {
 	for _, g := range d.Goroutines {
 		var c *StackFrame
 		for r := g.Bos; r != nil; r = r.Parent {
-			for i, f := range r.fields {
+			for i, f := range r.Fields {
 				name := locals[localKey{r.Name, uint64(len(r.Data)) - f.Offset}]
 				if name == "" && c != nil {
 					name = args[localKey{c.Name, f.Offset}]
@@ -1112,7 +1116,7 @@ func nameWithDwarf(d *Dump, execname string) {
 				if name == "" {
 					name = fmt.Sprintf("~%d", f.Offset)
 				}
-				r.fields[i].Name = name
+				r.Fields[i].Name = name
 			}
 			c = r
 		}
@@ -1176,7 +1180,7 @@ func link(d *Dump) {
 
 	// link stack frames to objects
 	for _, f := range d.Frames {
-		f.Edges = info.appendFields(f.Edges, f.Data, f.fields, 0, -1)
+		f.Edges = info.appendFields(f.Edges, f.Data, f.Fields, 0, -1)
 	}
 
 	// link up frames in sequence
@@ -1195,7 +1199,7 @@ func link(d *Dump) {
 			log.Fatal("bos missing")
 		}
 		for f := g.Bos; f != nil; f = f.Parent {
-			f.goroutine = g
+			f.Goroutine = g
 		}
 		x := info.findObj(g.ctxtaddr)
 		if x != nil {
@@ -1271,8 +1275,8 @@ func nameFallback(d *Dump) {
 	}
 	// name all frame fields
 	for _, r := range d.Frames {
-		for i := range r.fields {
-			r.fields[i].Name = fmt.Sprintf("var%d", i)
+		for i := range r.Fields {
+			r.Fields[i].Name = fmt.Sprintf("var%d", i)
 		}
 	}
 	// name all globals
