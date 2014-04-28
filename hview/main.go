@@ -26,45 +26,8 @@ var (
 // d is the loaded heap dump.
 var d *read.Dump
 
-// Not all objects in the heap have a type.  This record is a
-// "full" type which has additional information (kind & size)
-// to disambiguate typeless objects, as well as regular vs
-// array vs channel objects.
-type fullType struct {
-	typ  *read.Type
-	kind read.TypeKind
-	size uint64
-}
-
-func (f fullType) name() string {
-	switch f.kind {
-	case read.TypeKindObject:
-		if f.typ != nil {
-			return f.typ.Name
-		} else {
-			return fmt.Sprintf("noptr%d", f.size)
-		}
-	case read.TypeKindArray:
-		return fmt.Sprintf("{%d}%s", f.size/f.typ.Size, f.typ.Name)
-	case read.TypeKindChan:
-		if f.typ.Size > 0 {
-			return fmt.Sprintf("chan{%d}%s", (f.size-d.HChanSize)/f.typ.Size, f.typ.Name)
-		} else {
-			return fmt.Sprintf("chan{inf}%s", f.typ.Name)
-		}
-	case read.TypeKindConservative:
-		return fmt.Sprintf("conservative%d", f.size)
-	default:
-		log.Fatal("bad kind")
-		return ""
-	}
-}
-func (f fullType) link() string {
-	id := uint64(0)
-	if f.typ != nil {
-		id = f.typ.Addr
-	}
-	return fmt.Sprintf("<a href=\"type?id=%x&kind=%d&size=%d\">%s</a>", id, f.kind, f.size, f.name())
+func typeLink(ft *read.FullType) string {
+	return fmt.Sprintf("<a href=\"type?id=%d\">%s</a>", ft.Id, ft.Name)
 }
 
 // returns an html string representing the target of an Edge
@@ -397,8 +360,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ft := fullType{x.Type(), x.Kind(), x.Size()}
-	if err := objTemplate.Execute(w, objInfo{x.Addr, ft.link(), x.Size(), fields(x), referrers[x]}); err != nil {
+	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), fields(x), referrers[x]}); err != nil {
 		log.Print(err)
 	}
 }
@@ -431,52 +393,24 @@ var typeTemplate = template.Must(template.New("type").Parse(`
 
 func typeHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	s := q["size"]
+	s := q["id"]
 	if len(s) != 1 {
-		http.Error(w, "size parameter missing", 405)
+		http.Error(w, "type id missing", 405)
 		return
 	}
-	size, err := strconv.ParseUint(s[0], 10, 64)
-	if err != nil {
-		http.Error(w, err.Error(), 405)
-		return
-	}
-	k := q["kind"]
-	if len(k) != 1 {
-		http.Error(w, "kind parameter missing", 405)
-		return
-	}
-	kind, err := strconv.ParseUint(k[0], 10, 64)
-	if err != nil {
-		http.Error(w, err.Error(), 405)
-		return
-	}
-	v := q["id"]
-	if len(v) != 1 {
-		http.Error(w, "id parameter missing", 405)
-		return
-	}
-	id, err := strconv.ParseUint(v[0], 16, 64)
+	id, err := strconv.ParseUint(s[0], 10, 64)
 	if err != nil {
 		http.Error(w, err.Error(), 405)
 		return
 	}
 
-	var t *read.Type
-	for _, u := range d.Types {
-		if u.Addr == id {
-			t = u
-			break
-		}
-	}
-	if id != 0 && t == nil {
+	if id >= uint64(len(d.FTList)) {
 		http.Error(w, "can't find type", 405)
 		return
 	}
 
-	ft := fullType{t, read.TypeKind(kind), size}
-
-	if err := typeTemplate.Execute(w, typeInfo{ft.name(), size, byType[ft].objects}); err != nil {
+	ft := d.FTList[id]
+	if err := typeTemplate.Execute(w, typeInfo{ft.Name, ft.Size, byType[ft.Id].objects}); err != nil {
 		log.Print(err)
 	}
 }
@@ -529,8 +463,9 @@ border:1px solid grey;
 func histoHandler(w http.ResponseWriter, r *http.Request) {
 	// build sorted list of types
 	var s []hentry
-	for k, b := range byType {
-		s = append(s, hentry{k.link(), len(b.objects), b.bytes})
+	for id, b := range byType {
+		ft := d.FTList[id]
+		s = append(s, hentry{typeLink(ft), len(b.objects), b.bytes})
 	}
 	sort.Sort(ByBytes(s))
 
@@ -992,18 +927,19 @@ type bucket struct {
 	objects []*read.Object
 }
 
-var byType map[fullType]bucket
+// histogram by full type id
+var byType []bucket
 
 var referrers map[*read.Object][]string
 
 func prepare() {
 	// group objects by type
-	byType = map[fullType]bucket{}
+	byType = make([]bucket, len(d.FTList))
 	for _, x := range d.Objects {
-		b := byType[fullType{x.Type(), x.Kind(), x.Size()}]
+		b := byType[x.Ft.Id]
 		b.bytes += x.Size()
 		b.objects = append(b.objects, x)
-		byType[fullType{x.Type(), x.Kind(), x.Size()}] = b
+		byType[x.Ft.Id] = b
 	}
 
 	// compute referrers
