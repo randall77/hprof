@@ -156,9 +156,6 @@ func (x *Object) Type() *Type {
 func (x *Object) Kind() TypeKind {
 	return x.Ft.Kind
 }
-func (x *Object) TypeName() string {
-	return x.Ft.Name
-}
 func (d *Dump) Contents(x *Object) []byte {
 	b := d.buf
 	if uint64(cap(b)) < x.Ft.Size {
@@ -431,7 +428,6 @@ func rawRead(filename string) *Dump {
 				}
 				ft = &FullType{len(d.FTList), t, kind, size, name}
 				ftmap[k] = ft
-				fmt.Println(ft)
 				d.FTList = append(d.FTList, ft)
 			}
 			obj.Ft = ft

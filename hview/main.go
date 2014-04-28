@@ -26,6 +26,7 @@ var (
 // d is the loaded heap dump.
 var d *read.Dump
 
+// link to type's page
 func typeLink(ft *read.FullType) string {
 	return fmt.Sprintf("<a href=\"type?id=%d\">%s</a>", ft.Id, ft.Name)
 }
