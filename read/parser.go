@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"regexp"
@@ -98,6 +99,9 @@ type Dump struct {
 	Defers     []*Defer
 	Panics     []*Panic
 
+	// handle to dump file
+	r  io.ReaderAt
+
 	// temporary space for Data calls
 	buf        []byte
 }
@@ -119,7 +123,8 @@ type Edge struct {
 type Object struct {
 	Typ   *Type
 	Kind  TypeKind
-	data  []byte // length is sizeclass size, may be bigger then typ.size
+	offset int64   // position of object contents in dump file
+	size uint64
 	Edges []Edge
 
 	Addr    uint64
@@ -127,10 +132,21 @@ type Object struct {
 }
 
 func (x *Object) Size() uint64 {
-	return uint64(len(x.data))
+	return x.size
 }
 func (d *Dump) Contents(x *Object) []byte {
-	return x.data
+	b := d.buf
+	if uint64(cap(b)) < x.size {
+		b = make([]byte, x.size)
+		d.buf = b
+	}
+	b = b[:x.size]
+	n, err := d.r.ReadAt(b, x.offset)
+	if err != nil && !(n == len(b) && err == io.EOF) {
+		// TODO: propagate to caller
+		log.Fatal(err)
+	}
+	return b
 }
 
 type OtherRoot struct {
@@ -301,13 +317,46 @@ func readFields(r Reader) []Field {
 	}
 }
 
+// A Reader that can tell you its current offset in the file.
+type myReader struct {
+	r *bufio.Reader
+	cnt int64
+}
+
+func (r *myReader) Read(p []byte) (n int, err error) {
+	n, err = r.r.Read(p)
+	r.cnt += int64(n)
+	return
+}
+func (r *myReader) ReadByte() (c byte, err error) {
+	c, err = r.r.ReadByte()
+	if err != nil {
+		return
+	}
+	r.cnt++
+	return
+}
+func (r *myReader) ReadLine() (line []byte, isPrefix bool, err error) {
+	line, isPrefix, err = r.r.ReadLine()
+	r.cnt += int64(len(line))+1
+	return
+}
+func (r *myReader) Skip(n int64) error {
+	k, err := io.CopyN(ioutil.Discard, r.r, n)
+	r.cnt += k
+	return err
+}
+func (r *myReader) Count() int64 {
+	return r.cnt
+}
+
 // Reads heap dump into memory.
 func rawRead(filename string) *Dump {
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatal(err)
 	}
-	r := bufio.NewReader(file)
+	r := &myReader{r:bufio.NewReader(file)}
 
 	// check for header
 	hdr, prefix, err := r.ReadLine()
@@ -319,6 +368,7 @@ func rawRead(filename string) *Dump {
 	}
 
 	var d Dump
+	d.r = file
 	for {
 		kind := readUint64(r)
 		switch kind {
@@ -327,7 +377,9 @@ func rawRead(filename string) *Dump {
 			obj.Addr = readUint64(r)
 			obj.typaddr = readUint64(r)
 			obj.Kind = TypeKind(readUint64(r))
-			obj.data = readBytes(r)
+			obj.size = readUint64(r)
+			obj.offset = r.Count()
+			r.Skip(int64(obj.size))
 			d.Objects = append(d.Objects, obj)
 		case tagEOF:
 			return &d
@@ -474,7 +526,7 @@ func rawRead(filename string) *Dump {
 			t.link = readUint64(r)
 			d.Panics = append(d.Panics, t)
 		default:
-			log.Fatal("unknown record kind %d", kind)
+			log.Fatal("unknown record kind ", kind)
 		}
 	}
 }
