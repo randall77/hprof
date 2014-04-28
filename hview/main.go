@@ -225,10 +225,10 @@ func fields(x *read.Object) []Field {
 	b := d.Contents(x)
 
 	var r []Field
-	switch x.Kind {
+	switch x.Kind() {
 	case read.TypeKindObject:
-		if x.Typ != nil {
-			r = getFields(b, x.Typ.Fields, emap, 0)
+		if x.Type() != nil {
+			r = getFields(b, x.Type().Fields, emap, 0)
 		} else {
 			// raw data
 			if len(emap) > 0 {
@@ -253,9 +253,9 @@ func fields(x *read.Object) []Field {
 			}
 		}
 	case read.TypeKindArray:
-		n := x.Size() / x.Typ.Size
+		n := x.Size() / x.Type().Size
 		for i := uint64(0); i < n; i++ {
-			s := getFields(b[i*x.Typ.Size:(i+1)*x.Typ.Size], x.Typ.Fields, emap, i*x.Typ.Size)
+			s := getFields(b[i*x.Type().Size:(i+1)*x.Type().Size], x.Type().Fields, emap, i*x.Type().Size)
 			for _, f := range s {
 				if f.Name == "" {
 					f.Name = fmt.Sprintf("%d", i)
@@ -278,10 +278,10 @@ func fields(x *read.Object) []Field {
 			}
 		}
 
-		if x.Typ.Size > 0 {
-			n := (x.Size() - d.HChanSize) / x.Typ.Size
+		if x.Type().Size > 0 {
+			n := (x.Size() - d.HChanSize) / x.Type().Size
 			for i := uint64(0); i < n; i++ {
-				s := getFields(b[d.HChanSize+i*x.Typ.Size:d.HChanSize+(i+1)*x.Typ.Size], x.Typ.Fields, emap, d.HChanSize+i*x.Typ.Size)
+				s := getFields(b[d.HChanSize+i*x.Type().Size:d.HChanSize+(i+1)*x.Type().Size], x.Type().Fields, emap, d.HChanSize+i*x.Type().Size)
 				for _, f := range s {
 					if f.Name == "" {
 						f.Name = fmt.Sprintf("%d", i)
@@ -397,7 +397,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ft := fullType{x.Typ, x.Kind, x.Size()}
+	ft := fullType{x.Type(), x.Kind(), x.Size()}
 	if err := objTemplate.Execute(w, objInfo{x.Addr, ft.link(), x.Size(), fields(x), referrers[x]}); err != nil {
 		log.Print(err)
 	}
@@ -1000,10 +1000,10 @@ func prepare() {
 	// group objects by type
 	byType = map[fullType]bucket{}
 	for _, x := range d.Objects {
-		b := byType[fullType{x.Typ, x.Kind, x.Size()}]
+		b := byType[fullType{x.Type(), x.Kind(), x.Size()}]
 		b.bytes += x.Size()
 		b.objects = append(b.objects, x)
-		byType[fullType{x.Typ, x.Kind, x.Size()}] = b
+		byType[fullType{x.Type(), x.Kind(), x.Size()}] = b
 	}
 
 	// compute referrers

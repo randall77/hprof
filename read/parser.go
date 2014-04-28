@@ -106,6 +106,15 @@ type Dump struct {
 	buf        []byte
 }
 
+type Type struct {
+	Name     string // not necessarily unique
+	Size     uint64
+	efaceptr bool    // Efaces with this type have a data field which is a pointer
+	Fields   []Field // ordered in increasing offset order
+
+	Addr uint64
+}
+
 // An edge is a directed connection between two objects.  The source
 // object is implicit.  An edge includes information about where it
 // leaves the source object and where it lands in the destination obj.
@@ -121,26 +130,28 @@ type Edge struct {
 
 // There will be a lot of these.  They need to be small.
 type Object struct {
-	Typ   *Type
-	Kind  TypeKind
+	ft   *FullType
 	offset int64   // position of object contents in dump file
-	size uint64
 	Edges []Edge
-
 	Addr    uint64
-	typaddr uint64
 }
 
 func (x *Object) Size() uint64 {
-	return x.size
+	return x.ft.Size
+}
+func (x *Object) Type() *Type {
+	return x.ft.Typ
+}
+func (x *Object) Kind() TypeKind {
+	return x.ft.Kind
 }
 func (d *Dump) Contents(x *Object) []byte {
 	b := d.buf
-	if uint64(cap(b)) < x.size {
-		b = make([]byte, x.size)
+	if uint64(cap(b)) < x.ft.Size {
+		b = make([]byte, x.ft.Size)
 		d.buf = b
 	}
-	b = b[:x.size]
+	b = b[:x.ft.Size]
 	n, err := d.r.ReadAt(b, x.offset)
 	if err != nil && !(n == len(b) && err == io.EOF) {
 		// TODO: propagate to caller
@@ -220,15 +231,6 @@ type Field struct {
 	Kind   FieldKind
 	Offset uint64
 	Name   string
-}
-
-type Type struct {
-	Name     string // not necessarily unique
-	Size     uint64
-	efaceptr bool    // Efaces with this type have a data field which is a pointer
-	Fields   []Field // ordered in increasing offset order
-
-	Addr uint64
 }
 
 type GoRoutine struct {
@@ -350,6 +352,19 @@ func (r *myReader) Count() int64 {
 	return r.cnt
 }
 
+type FullType struct {
+	Typ *Type
+	Kind TypeKind
+	Size uint64
+	Name string
+}
+
+type tkey struct {
+	typaddr uint64
+	kind TypeKind
+	size uint64
+}
+
 // Reads heap dump into memory.
 func rawRead(filename string) *Dump {
 	file, err := os.Open(filename)
@@ -369,17 +384,50 @@ func rawRead(filename string) *Dump {
 
 	var d Dump
 	d.r = file
+	tmap := map[uint64]*Type{} // typaddr to type
+	ftmap := map[tkey]*FullType{} // full type dedup
 	for {
 		kind := readUint64(r)
 		switch kind {
 		case tagObject:
 			obj := &Object{}
 			obj.Addr = readUint64(r)
-			obj.typaddr = readUint64(r)
-			obj.Kind = TypeKind(readUint64(r))
-			obj.size = readUint64(r)
+			typaddr := readUint64(r)
+			kind := TypeKind(readUint64(r))
+			size := readUint64(r)
+			k := tkey{typaddr, kind, size}
+			ft := ftmap[k]
+			if ft == nil {
+				t := tmap[typaddr]
+				if typaddr != 0 && t == nil {
+					log.Fatal("types appear before use of that type")
+				}
+				var name string
+				switch kind {
+				case TypeKindObject:
+					if t != nil {
+						name = t.Name
+					} else {
+						name = fmt.Sprintf("noptr%d", size)
+					}
+				case TypeKindArray:
+					name = fmt.Sprintf("{%d}%s", size/t.Size, t.Name)
+				case TypeKindChan:
+					if t.Size > 0 {
+						// TODO: document that HChanSize must come before a channel object
+						name = fmt.Sprintf("chan{%d}%s", (size - d.HChanSize)/t.Size, t.Name)
+					} else {
+						name = fmt.Sprintf("chan{inf}%s", t.Name)
+					}
+				case TypeKindConservative:
+					name = fmt.Sprintf("conservative%d", size)
+				}
+				ft = &FullType{t, kind, size, name}
+				ftmap[k] = ft
+			}
+			obj.ft = ft
 			obj.offset = r.Count()
-			r.Skip(int64(obj.size))
+			r.Skip(int64(ft.Size))
 			d.Objects = append(d.Objects, obj)
 		case tagEOF:
 			return &d
@@ -396,6 +444,7 @@ func rawRead(filename string) *Dump {
 			typ.efaceptr = readBool(r)
 			typ.Fields = readFields(r)
 			d.Types = append(d.Types, typ)
+			tmap[typ.Addr] = typ
 		case tagGoRoutine:
 			g := &GoRoutine{}
 			g.Addr = readUint64(r)
@@ -1226,6 +1275,7 @@ func link(d *Dump) {
 	}
 
 	// link objects to types
+	/*
 	for _, x := range d.Objects {
 		if x.typaddr == 0 {
 			x.Typ = nil
@@ -1236,6 +1286,7 @@ func link(d *Dump) {
 			}
 		}
 	}
+*/
 
 	// link stack frames to objects
 	for _, f := range d.Frames {
@@ -1281,12 +1332,12 @@ func link(d *Dump) {
 
 	// link objects to each other
 	for _, x := range d.Objects {
-		t := x.Typ
-		if t == nil && x.Kind != TypeKindConservative {
+		t := x.ft.Typ
+		if t == nil && x.ft.Kind != TypeKindConservative {
 			continue // typeless objects have no pointers
 		}
 		b := d.Contents(x)
-		switch x.Kind {
+		switch x.ft.Kind {
 		case TypeKindObject:
 			x.Edges = info.appendFields(x.Edges, b, t.Fields, 0, -1)
 		case TypeKindArray:

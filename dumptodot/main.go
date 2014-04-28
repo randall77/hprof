@@ -81,16 +81,16 @@ func main() {
 		if _, ok := reachable[x]; !ok {
 			fmt.Printf("  v%x [style=filled fillcolor=gray];\n", x.Addr)
 		}
-		if x.Typ != nil {
-			name := x.Typ.Name
-			switch x.Kind {
+		if x.Type() != nil {
+			name := x.Type().Name
+			switch x.Kind() {
 			case read.TypeKindArray:
-				name = fmt.Sprintf("{%d}%s", x.Size()/x.Typ.Size, name)
+				name = fmt.Sprintf("{%d}%s", x.Size()/x.Type().Size, name)
 			case read.TypeKindChan:
-				if x.Typ.Size == 0 {
+				if x.Type().Size == 0 {
 					name = fmt.Sprintf("chan{?}%s", name)
 				} else {
-					name = fmt.Sprintf("chan{%d}%s", (x.Size()-d.HChanSize)/x.Typ.Size, name)
+					name = fmt.Sprintf("chan{%d}%s", (x.Size()-d.HChanSize)/x.Type().Size, name)
 				}
 			}
 			// NOTE: sizes are max sizes given sizeclass - the actual size of a

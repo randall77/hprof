@@ -728,16 +728,16 @@ func addHeapDump() {
 
 		// figure out what class to use for this object
 		var c uint64
-		if x.Typ == nil {
+		if x.Type() == nil {
 			c = NoPtrClass(x.Size())
 		} else {
-			switch x.Kind {
+			switch x.Kind() {
 			case read.TypeKindObject:
-				c = StdClass(x.Typ, x.Size())
+				c = StdClass(x.Type(), x.Size())
 			case read.TypeKindArray:
-				c = ArrayClass(x.Typ, x.Size())
+				c = ArrayClass(x.Type(), x.Size())
 			case read.TypeKindChan:
-				c = ChanClass(x.Typ, x.Size())
+				c = ChanClass(x.Type(), x.Size())
 			// TODO: TypeKindConservative
 			default:
 				log.Fatal("unhandled kind")
