@@ -100,13 +100,13 @@ type Dump struct {
 	Panics     []*Panic
 
 	// handle to dump file
-	r  io.ReaderAt
+	r io.ReaderAt
 
 	// temporary space for Data calls
-	buf        []byte
+	buf []byte
 
 	// list of full types, indexed by ID
-	FTList     []*FullType
+	FTList []*FullType
 }
 
 type Type struct {
@@ -119,8 +119,8 @@ type Type struct {
 }
 
 type FullType struct {
-	Id int
-	Typ *Type
+	Id   int
+	Typ  *Type
 	Kind TypeKind
 	Size uint64
 	Name string
@@ -139,12 +139,13 @@ type Edge struct {
 	FieldOffset uint64
 }
 
+// Object represents an object in the heap.
 // There will be a lot of these.  They need to be small.
 type Object struct {
-	Ft   *FullType
-	offset int64   // position of object contents in dump file
-	Edges []Edge
-	Addr    uint64
+	Ft     *FullType
+	offset int64 // position of object contents in dump file
+	Edges  []Edge
+	Addr   uint64
 }
 
 func (x *Object) Size() uint64 {
@@ -332,7 +333,7 @@ func readFields(r Reader) []Field {
 
 // A Reader that can tell you its current offset in the file.
 type myReader struct {
-	r *bufio.Reader
+	r   *bufio.Reader
 	cnt int64
 }
 
@@ -351,7 +352,7 @@ func (r *myReader) ReadByte() (c byte, err error) {
 }
 func (r *myReader) ReadLine() (line []byte, isPrefix bool, err error) {
 	line, isPrefix, err = r.r.ReadLine()
-	r.cnt += int64(len(line))+1
+	r.cnt += int64(len(line)) + 1
 	return
 }
 func (r *myReader) Skip(n int64) error {
@@ -365,8 +366,8 @@ func (r *myReader) Count() int64 {
 
 type tkey struct {
 	typaddr uint64
-	kind TypeKind
-	size uint64
+	kind    TypeKind
+	size    uint64
 }
 
 // Reads heap dump into memory.
@@ -375,7 +376,7 @@ func rawRead(filename string) *Dump {
 	if err != nil {
 		log.Fatal(err)
 	}
-	r := &myReader{r:bufio.NewReader(file)}
+	r := &myReader{r: bufio.NewReader(file)}
 
 	// check for header
 	hdr, prefix, err := r.ReadLine()
@@ -388,7 +389,7 @@ func rawRead(filename string) *Dump {
 
 	var d Dump
 	d.r = file
-	tmap := map[uint64]*Type{} // typaddr to type
+	tmap := map[uint64]*Type{}    // typaddr to type
 	ftmap := map[tkey]*FullType{} // full type dedup
 	for {
 		kind := readUint64(r)
@@ -419,7 +420,7 @@ func rawRead(filename string) *Dump {
 				case TypeKindChan:
 					if t.Size > 0 {
 						// TODO: document that HChanSize must come before a channel object
-						name = fmt.Sprintf("chan{%d}%s", (size - d.HChanSize)/t.Size, t.Name)
+						name = fmt.Sprintf("chan{%d}%s", (size-d.HChanSize)/t.Size, t.Name)
 					} else {
 						name = fmt.Sprintf("chan{inf}%s", t.Name)
 					}
@@ -1281,17 +1282,17 @@ func link(d *Dump) {
 
 	// link objects to types
 	/*
-	for _, x := range d.Objects {
-		if x.typaddr == 0 {
-			x.Typ = nil
-		} else {
-			x.Typ = info.types[x.typaddr]
-			if x.Typ == nil {
-				log.Fatal("type is missing")
+		for _, x := range d.Objects {
+			if x.typaddr == 0 {
+				x.Typ = nil
+			} else {
+				x.Typ = info.types[x.typaddr]
+				if x.Typ == nil {
+					log.Fatal("type is missing")
+				}
 			}
 		}
-	}
-*/
+	*/
 
 	// link stack frames to objects
 	for _, f := range d.Frames {

@@ -8,17 +8,18 @@ import (
 	"html"
 	"log"
 	"net/http"
-	"sort"
-	"strconv"
-	"text/template"
 	"os"
 	"runtime"
 	"runtime/debug"
+	"sort"
+	"strconv"
+	"text/template"
 )
 
 const (
 	defaultAddr = ":8080" // default webserver address
 )
+
 var (
 	httpAddr = flag.String("http", defaultAddr, "HTTP service address")
 )
@@ -286,12 +287,13 @@ var chanFields = map[uint64]map[uint64]string{
 }
 
 type objInfo struct {
-	Id        uint64
-	Typ       string
-	Size      uint64
-	Fields    []Field
-	Referrers []string
+	Id           uint64
+	Typ          string
+	Size         uint64
+	Fields       []Field
+	Referrers    []string
 	ReachableMem uint64
+	Roots        []string
 }
 
 var objTemplate = template.Must(template.New("obj").Parse(`
@@ -334,6 +336,11 @@ border:1px solid grey;
 {{end}}
 <h3>Reachable Memory</h3>
 {{.ReachableMem}} bytes
+<h3>Roots that reach here</h3>
+{{range .Roots}}
+{{.}}
+<br>
+{{end}}
 </tt>
 </body>
 </html>
@@ -381,7 +388,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), fields(x), referrers[x], reachableMem}); err != nil {
+	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), fields(x), referrers[x], reachableMem, nil}); err != nil {
 		log.Print(err)
 	}
 }
@@ -994,6 +1001,14 @@ func prepare() {
 		e := x.E
 		referrers[e.To] = append(referrers[e.To], x.Description)
 	}
+
+	s := uint64(0)
+	for _, x := range d.Otherroots {
+		e := x.E
+		referrers[e.To] = append(referrers[e.To], x.Description)
+		s += e.To.Size()
+	}
+	fmt.Println("type data", s)
 }
 
 func readPtr(b []byte) uint64 {
