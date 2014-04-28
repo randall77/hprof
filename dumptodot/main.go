@@ -85,19 +85,19 @@ func main() {
 			name := x.Typ.Name
 			switch x.Kind {
 			case read.TypeKindArray:
-				name = fmt.Sprintf("{%d}%s", uint64(len(x.Data))/x.Typ.Size, name)
+				name = fmt.Sprintf("{%d}%s", x.Size()/x.Typ.Size, name)
 			case read.TypeKindChan:
 				if x.Typ.Size == 0 {
 					name = fmt.Sprintf("chan{?}%s", name)
 				} else {
-					name = fmt.Sprintf("chan{%d}%s", (uint64(len(x.Data))-d.HChanSize)/x.Typ.Size, name)
+					name = fmt.Sprintf("chan{%d}%s", (x.Size()-d.HChanSize)/x.Typ.Size, name)
 				}
 			}
 			// NOTE: sizes are max sizes given sizeclass - the actual size of a
 			// chan or array might be smaller.
-			fmt.Printf("  v%x [label=\"%s\\n%d\"];\n", x.Addr, name, len(x.Data))
+			fmt.Printf("  v%x [label=\"%s\\n%d\"];\n", x.Addr, name, x.Size())
 		} else {
-			fmt.Printf("  v%x [label=\"%d\"];\n", x.Addr, len(x.Data))
+			fmt.Printf("  v%x [label=\"%d\"];\n", x.Addr, x.Size())
 		}
 		for _, e := range x.Edges {
 			var taillabel, headlabel string

@@ -97,6 +97,9 @@ type Dump struct {
 	Bss        *Data
 	Defers     []*Defer
 	Panics     []*Panic
+
+	// temporary space for Data calls
+	buf        []byte
 }
 
 // An edge is a directed connection between two objects.  The source
@@ -112,10 +115,11 @@ type Edge struct {
 	FieldOffset uint64
 }
 
+// There will be a lot of these.  They need to be small.
 type Object struct {
 	Typ   *Type
 	Kind  TypeKind
-	Data  []byte // length is sizeclass size, may be bigger then typ.size
+	data  []byte // length is sizeclass size, may be bigger then typ.size
 	Edges []Edge
 
 	Addr    uint64
@@ -123,7 +127,10 @@ type Object struct {
 }
 
 func (x *Object) Size() uint64 {
-	return uint64(len(x.Data))
+	return uint64(len(x.data))
+}
+func (d *Dump) Contents(x *Object) []byte {
+	return x.data
 }
 
 type OtherRoot struct {
@@ -320,7 +327,7 @@ func rawRead(filename string) *Dump {
 			obj.Addr = readUint64(r)
 			obj.typaddr = readUint64(r)
 			obj.Kind = TypeKind(readUint64(r))
-			obj.Data = readBytes(r)
+			obj.data = readBytes(r)
 			d.Objects = append(d.Objects, obj)
 		case tagEOF:
 			return &d
@@ -954,7 +961,7 @@ func (info *LinkInfo) findObj(addr uint64) *Object {
 		return nil
 	}
 	x := xi.(*Object)
-	if addr >= x.Addr+uint64(len(x.Data)) {
+	if addr >= x.Addr+uint64(x.Size()) {
 		return nil
 	}
 	return x
@@ -1226,22 +1233,23 @@ func link(d *Dump) {
 		if t == nil && x.Kind != TypeKindConservative {
 			continue // typeless objects have no pointers
 		}
+		b := d.Contents(x)
 		switch x.Kind {
 		case TypeKindObject:
-			x.Edges = info.appendFields(x.Edges, x.Data, t.Fields, 0, -1)
+			x.Edges = info.appendFields(x.Edges, b, t.Fields, 0, -1)
 		case TypeKindArray:
-			for i := uint64(0); i <= uint64(len(x.Data))-t.Size; i += t.Size {
-				x.Edges = info.appendFields(x.Edges, x.Data, t.Fields, i, int64(i/t.Size))
+			for i := uint64(0); i <= x.Size()-t.Size; i += t.Size {
+				x.Edges = info.appendFields(x.Edges, b, t.Fields, i, int64(i/t.Size))
 			}
 		case TypeKindChan:
 			if t.Size > 0 {
-				for i := d.HChanSize; i <= uint64(len(x.Data))-t.Size; i += t.Size {
-					x.Edges = info.appendFields(x.Edges, x.Data, t.Fields, i, int64(i/t.Size))
+				for i := d.HChanSize; i <= x.Size()-t.Size; i += t.Size {
+					x.Edges = info.appendFields(x.Edges, b, t.Fields, i, int64(i/t.Size))
 				}
 			}
 		case TypeKindConservative:
-			for i := uint64(0); i < uint64(len(x.Data)); i += d.PtrSize {
-				x.Edges = info.appendEdge(x.Edges, x.Data, i, Field{FieldKindPtr, i, fmt.Sprintf("~%d", i)}, -1)
+			for i := uint64(0); i < x.Size(); i += d.PtrSize {
+				x.Edges = info.appendEdge(x.Edges, b, i, Field{FieldKindPtr, i, fmt.Sprintf("~%d", i)}, -1)
 			}
 		}
 	}

@@ -721,7 +721,7 @@ func addHeapDump() {
 
 	// output each object as an instance
 	for _, x := range d.Objects {
-		if len(x.Data) >= 8<<32 {
+		if x.Size() >= 8<<32 {
 			// file format can't record objects this big.  TODO: error/warning?  Truncate?
 			continue
 		}
@@ -729,15 +729,15 @@ func addHeapDump() {
 		// figure out what class to use for this object
 		var c uint64
 		if x.Typ == nil {
-			c = NoPtrClass(uint64(len(x.Data)))
+			c = NoPtrClass(x.Size())
 		} else {
 			switch x.Kind {
 			case read.TypeKindObject:
-				c = StdClass(x.Typ, uint64(len(x.Data)))
+				c = StdClass(x.Typ, x.Size())
 			case read.TypeKindArray:
-				c = ArrayClass(x.Typ, uint64(len(x.Data)))
+				c = ArrayClass(x.Typ, x.Size())
 			case read.TypeKindChan:
-				c = ChanClass(x.Typ, uint64(len(x.Data)))
+				c = ChanClass(x.Typ, x.Size())
 			// TODO: TypeKindConservative
 			default:
 				log.Fatal("unhandled kind")
@@ -745,7 +745,7 @@ func addHeapDump() {
 		}
 
 		// make a copy of the object data so we can modify it
-		data = append(data[:0], x.Data...)
+		data = append(data[:0], d.Contents(x)...)
 
 		// Any pointers to objects get adjusted to point to the object head.
 		for _, e := range x.Edges {
@@ -798,20 +798,20 @@ func addHeapDump() {
 			dump = append(dump, HPROF_GC_PRIM_ARRAY_DUMP)
 			dump = appendId(dump, x.Addr)
 			dump = append32(dump, stack_trace_serial_number)
-			dump = append32(dump, uint32(len(x.Data)/8))
+			dump = append32(dump, uint32(x.Size()/8))
 			dump = append(dump, T_LONG)
 		} else if c == bigPtrArray {
 			dump = append(dump, HPROF_GC_OBJ_ARRAY_DUMP)
 			dump = appendId(dump, x.Addr)
 			dump = append32(dump, stack_trace_serial_number)
-			dump = append32(dump, uint32(len(x.Data)/8))
+			dump = append32(dump, uint32(x.Size()/8))
 			dump = appendId(dump, java_lang_objectarray)
 		} else {
 			dump = append(dump, HPROF_GC_INSTANCE_DUMP)
 			dump = appendId(dump, x.Addr)
 			dump = append32(dump, stack_trace_serial_number)
 			dump = appendId(dump, c)
-			dump = append32(dump, uint32(len(x.Data)))
+			dump = append32(dump, uint32(x.Size()))
 		}
 		// dump object data
 		dump = append(dump, data...)

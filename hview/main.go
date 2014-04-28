@@ -12,13 +12,15 @@ import (
 	"strconv"
 	"text/template"
 	"os"
+	"runtime"
+	"runtime/debug"
 )
 
 const (
 	defaultAddr = ":8080" // default webserver address
 )
 var (
-	httpAddr   = flag.String("http", defaultAddr, "HTTP service address")
+	httpAddr = flag.String("http", defaultAddr, "HTTP service address")
 )
 
 // d is the loaded heap dump.
@@ -220,31 +222,32 @@ func fields(x *read.Object) []Field {
 	for _, e := range x.Edges {
 		emap[e.FromOffset] = e
 	}
+	b := d.Contents(x)
 
 	var r []Field
 	switch x.Kind {
 	case read.TypeKindObject:
 		if x.Typ != nil {
-			r = getFields(x.Data, x.Typ.Fields, emap, 0)
+			r = getFields(b, x.Typ.Fields, emap, 0)
 		} else {
 			// raw data
 			if len(emap) > 0 {
 				log.Fatal("edges in raw data")
 			}
-			for i := 0; i < len(x.Data); i += 16 {
-				n := len(x.Data) - i
+			for i := uint64(0); i < x.Size(); i += 16 {
+				n := x.Size() - i
 				if n > 16 {
 					n = 16
 				}
 				v := ""
 				s := ""
-				for j := 0; j < n; j++ {
-					b := x.Data[i+j]
-					v += fmt.Sprintf("%.2x ", b)
-					if b <= 32 || b >= 127 {
-						b = 46
+				for j := uint64(0); j < n; j++ {
+					c := b[i+j]
+					v += fmt.Sprintf("%.2x ", c)
+					if c <= 32 || c >= 127 {
+						c = 46
 					}
-					s += fmt.Sprintf("%c", b)
+					s += fmt.Sprintf("%c", c)
 				}
 				r = append(r, Field{fmt.Sprintf("offset %x", i), "raw bytes", v + " | " + html.EscapeString(s)})
 			}
@@ -252,7 +255,7 @@ func fields(x *read.Object) []Field {
 	case read.TypeKindArray:
 		n := x.Size() / x.Typ.Size
 		for i := uint64(0); i < n; i++ {
-			s := getFields(x.Data[i*x.Typ.Size:(i+1)*x.Typ.Size], x.Typ.Fields, emap, i*x.Typ.Size)
+			s := getFields(b[i*x.Typ.Size:(i+1)*x.Typ.Size], x.Typ.Fields, emap, i*x.Typ.Size)
 			for _, f := range s {
 				if f.Name == "" {
 					f.Name = fmt.Sprintf("%d", i)
@@ -269,16 +272,16 @@ func fields(x *read.Object) []Field {
 		}
 		for i := uint64(0); i < d.HChanSize; i += d.PtrSize {
 			if name, ok := fmap[i]; ok {
-				r = append(r, Field{name, "int", fmt.Sprintf("%d", readPtr(x.Data[i:]))})
+				r = append(r, Field{name, "int", fmt.Sprintf("%d", readPtr(b[i:]))})
 			} else {
-				r = append(r, Field{"<font color=LightGray>chanhdr</font>", "<font color=LightGray>int</font>", fmt.Sprintf("<font color=LightGray>%d</font>", readPtr(x.Data[i:]))})
+				r = append(r, Field{"<font color=LightGray>chanhdr</font>", "<font color=LightGray>int</font>", fmt.Sprintf("<font color=LightGray>%d</font>", readPtr(b[i:]))})
 			}
 		}
 
 		if x.Typ.Size > 0 {
 			n := (x.Size() - d.HChanSize) / x.Typ.Size
 			for i := uint64(0); i < n; i++ {
-				s := getFields(x.Data[d.HChanSize+i*x.Typ.Size:d.HChanSize+(i+1)*x.Typ.Size], x.Typ.Fields, emap, d.HChanSize+i*x.Typ.Size)
+				s := getFields(b[d.HChanSize+i*x.Typ.Size:d.HChanSize+(i+1)*x.Typ.Size], x.Typ.Fields, emap, d.HChanSize+i*x.Typ.Size)
 				for _, f := range s {
 					if f.Name == "" {
 						f.Name = fmt.Sprintf("%d", i)
@@ -294,7 +297,7 @@ func fields(x *read.Object) []Field {
 			if e, ok := emap[i]; ok {
 				r = append(r, Field{fmt.Sprintf("~%d", i), "ptr", edgeLink(e)})
 			} else {
-				r = append(r, Field{fmt.Sprintf("~%d", i), "ptr", nonheapPtr(x.Data[i:])})
+				r = append(r, Field{fmt.Sprintf("~%d", i), "ptr", nonheapPtr(b[i:])})
 			}
 		}
 	}
@@ -934,6 +937,18 @@ func frameHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// So meta.
+func heapdumpHandler(w http.ResponseWriter, r *http.Request) {
+	f, err := os.Create("metadump")
+	if err != nil {
+		panic(err)
+	}
+	runtime.GC()
+	debug.WriteHeapDump(f.Fd())
+	f.Close()
+	w.Write([]byte("done"))
+}
+
 func usage() {
 	fmt.Fprintf(os.Stderr,
 		"usage: hview heapdump [executable]\n")
@@ -966,6 +981,7 @@ func main() {
 	http.HandleFunc("/go", goHandler)
 	http.HandleFunc("/frame", frameHandler)
 	http.HandleFunc("/others", othersHandler)
+	http.HandleFunc("/heapdump", heapdumpHandler)
 	if err := http.ListenAndServe(*httpAddr, nil); err != nil {
 		log.Fatal(err)
 	}
@@ -985,7 +1001,7 @@ func prepare() {
 	byType = map[fullType]bucket{}
 	for _, x := range d.Objects {
 		b := byType[fullType{x.Typ, x.Kind, x.Size()}]
-		b.bytes += uint64(len(x.Data))
+		b.bytes += x.Size()
 		b.objects = append(b.objects, x)
 		byType[fullType{x.Typ, x.Kind, x.Size()}] = b
 	}
