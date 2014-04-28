@@ -291,6 +291,7 @@ type objInfo struct {
 	Size      uint64
 	Fields    []Field
 	Referrers []string
+	ReachableMem uint64
 }
 
 var objTemplate = template.Must(template.New("obj").Parse(`
@@ -331,6 +332,8 @@ border:1px solid grey;
 {{.}}
 <br>
 {{end}}
+<h3>Reachable Memory</h3>
+{{.ReachableMem}} bytes
 </tt>
 </body>
 </html>
@@ -361,7 +364,24 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), fields(x), referrers[x]}); err != nil {
+	reachableMem := uint64(0)
+	h := map[*read.Object]struct{}{}
+	var queue []*read.Object
+	h[x] = struct{}{}
+	queue = append(queue, x)
+	for len(queue) > 0 {
+		y := queue[0]
+		queue = queue[1:]
+		reachableMem += y.Size()
+		for _, e := range y.Edges {
+			if _, ok := h[e.To]; !ok {
+				h[e.To] = struct{}{}
+				queue = append(queue, e.To)
+			}
+		}
+	}
+
+	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), fields(x), referrers[x], reachableMem}); err != nil {
 		log.Print(err)
 	}
 }
