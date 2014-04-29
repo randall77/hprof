@@ -1141,12 +1141,6 @@ func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *Heap {
 	return h
 }
 
-// various maps used to link up data structures
-type LinkInfo struct {
-	dump    *Dump
-	objects *Heap
-}
-
 // stack frames may be zero-sized, so we add call depth
 // to the key to ensure uniqueness.
 type frameKey struct {
@@ -1154,24 +1148,12 @@ type frameKey struct {
 	depth uint64
 }
 
-func (info *LinkInfo) findObj(addr uint64) *Object {
-	_, xi := info.objects.Lookup(addr)
-	if xi == nil {
-		return nil
-	}
-	x := xi.(*Object)
-	if addr >= x.Addr+uint64(x.Size()) {
-		return nil
-	}
-	return x
-}
-
 // appendEdge might add an edge to edges.  Returns new edges.
 //   Requires data[off:] be a pointer
 //   Adds an edge if that pointer points to a valid object.
-func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64, f Field, arrayidx int64) []Edge {
-	p := readPtr(info.dump, data[off:])
-	q := info.findObj(p)
+func (d *Dump) appendEdge(edges []Edge, data []byte, off uint64, f Field, arrayidx int64) []Edge {
+	p := readPtr(d, data[off:])
+	q := d.findObj(p)
 	if q != nil {
 		var fieldoffset uint64 // TODO
 		fieldname := f.Name
@@ -1187,7 +1169,7 @@ func (info *LinkInfo) appendEdge(edges []Edge, data []byte, off uint64, f Field,
 	return edges
 }
 
-func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, offset uint64, arrayidx int64) []Edge {
+func (d *Dump) appendFields(edges []Edge, data []byte, fields []Field, offset uint64, arrayidx int64) []Edge {
 	for _, f := range fields {
 		off := offset + f.Offset
 		if off >= uint64(len(data)) {
@@ -1196,29 +1178,29 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 		}
 		switch f.Kind {
 		case FieldKindPtr:
-			edges = info.appendEdge(edges, data, off, f, arrayidx)
+			edges = d.appendEdge(edges, data, off, f, arrayidx)
 		case FieldKindString:
-			edges = info.appendEdge(edges, data, off, f, arrayidx)
+			edges = d.appendEdge(edges, data, off, f, arrayidx)
 		case FieldKindSlice:
-			edges = info.appendEdge(edges, data, off, f, arrayidx)
+			edges = d.appendEdge(edges, data, off, f, arrayidx)
 		case FieldKindEface:
-			edges = info.appendEdge(edges, data, off, f, arrayidx)
-			tp := readPtr(info.dump, data[off:])
+			edges = d.appendEdge(edges, data, off, f, arrayidx)
+			tp := readPtr(d, data[off:])
 			if tp != 0 {
-				t := info.dump.TypeMap[tp]
+				t := d.TypeMap[tp]
 				if t == nil {
 					//log.Fatal("can't find eface type")
 					continue
 				}
 				if t.efaceptr {
-					edges = info.appendEdge(edges, data, off+info.dump.PtrSize, f, arrayidx)
+					edges = d.appendEdge(edges, data, off+d.PtrSize, f, arrayidx)
 				}
 			}
 		case FieldKindIface:
-			tp := readPtr(info.dump, data[off:])
+			tp := readPtr(d, data[off:])
 			if tp != 0 {
-				if info.dump.ItabMap[tp] {
-					edges = info.appendEdge(edges, data, off+info.dump.PtrSize, f, arrayidx)
+				if d.ItabMap[tp] {
+					edges = d.appendEdge(edges, data, off+d.PtrSize, f, arrayidx)
 				}
 			}
 		}
@@ -1357,17 +1339,9 @@ func link(d *Dump) {
 	d.idx = idx
 
 	// initialize some maps used for linking
-	var info LinkInfo
-	info.dump = d
 	frames := make(map[frameKey]*StackFrame, len(d.Frames))
 	for _, x := range d.Frames {
 		frames[frameKey{x.Addr, x.Depth}] = x
-	}
-
-	// Binary-searchable map of objects
-	info.objects = &Heap{}
-	for _, x := range d.Objects {
-		info.objects.Insert(x.Addr, x)
 	}
 
 	// link objects to types
@@ -1376,7 +1350,7 @@ func link(d *Dump) {
 			if x.typaddr == 0 {
 				x.Typ = nil
 			} else {
-				x.Typ = info.types[x.typaddr]
+				x.Typ = d.types[x.typaddr]
 				if x.Typ == nil {
 					log.Fatal("type is missing")
 				}
@@ -1386,7 +1360,7 @@ func link(d *Dump) {
 
 	// link stack frames to objects
 	for _, f := range d.Frames {
-		f.Edges = info.appendFields(f.Edges, f.Data, f.Fields, 0, -1)
+		f.Edges = d.appendFields(f.Edges, f.Data, f.Fields, 0, -1)
 	}
 
 	// link up frames in sequence
@@ -1407,7 +1381,7 @@ func link(d *Dump) {
 		for f := g.Bos; f != nil; f = f.Parent {
 			f.Goroutine = g
 		}
-		x := info.findObj(g.ctxtaddr)
+		x := d.findObj(g.ctxtaddr)
 		if x != nil {
 			g.Ctxt = x
 		}
@@ -1415,12 +1389,12 @@ func link(d *Dump) {
 
 	// link data roots
 	for _, x := range []*Data{d.Data, d.Bss} {
-		x.Edges = info.appendFields(x.Edges, x.Data, x.Fields, 0, -1)
+		x.Edges = d.appendFields(x.Edges, x.Data, x.Fields, 0, -1)
 	}
 
 	// link other roots
 	for _, r := range d.Otherroots {
-		x := info.findObj(r.toaddr)
+		x := d.findObj(r.toaddr)
 		if x != nil {
 			r.E = Edge{x, 0, r.toaddr - x.Addr, "", 0}
 		}
@@ -1430,9 +1404,9 @@ func link(d *Dump) {
 	// TODO: how do we represent these?
 	/*
 	for _, f := range d.Finalizers {
-		x := info.findObj(f.obj)
+		x := d.findObj(f.obj)
 		for _, addr := range []uint64{f.fn, f.fint, f.ot} {
-			y := info.findObj(addr)
+			y := d.findObj(addr)
 			if x != nil && y != nil {
 				x.Edges = append(x.Edges, Edge{y, 0, addr - y.Addr, "finalizer", 0})
 			}
@@ -1441,7 +1415,7 @@ func link(d *Dump) {
 */
 	for _, f := range d.QFinal {
 		for _, addr := range []uint64{f.obj, f.fn, f.fint, f.ot} {
-			x := info.findObj(addr)
+			x := d.findObj(addr)
 			if x != nil {
 				f.Edges = append(f.Edges, Edge{x, 0, addr - x.Addr, "", 0})
 			}
