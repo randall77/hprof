@@ -65,15 +65,29 @@ func edgeSource(x *read.Object, e read.Edge) string {
 	}
 }
 
+// display field
 type Field struct {
 	Name  string
 	Typ   string
 	Value string
 }
 
+func rawBytes(b []byte) string {
+	v := ""
+	s := ""
+	for _, c := range b {
+		v += fmt.Sprintf("%.2x ", c)
+		if c <= 32 || c >= 127 {
+			c = 46
+		}
+		s += fmt.Sprintf("%c", c)
+	}
+	return v + " | " + html.EscapeString(s)
+}
+
 // getFields uses the data in b to fill in the values for the fields passed in.
 // edges is a map recording known connecting edges, adjusted with offset.
-func getFields(b []byte, fields []read.Field, emap map[uint64]read.Edge, offset uint64) []Field {
+func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 	var r []Field
 	off := uint64(0)
 	for _, f := range fields {
@@ -127,11 +141,20 @@ func getFields(b []byte, fields []read.Field, emap map[uint64]read.Edge, offset 
 			value = fmt.Sprintf("%d", int64(read64(b[off:])))
 			typ = "int64"
 			off += 8
+		case read.FieldKindBytes8:
+			value = rawBytes(b[off:off+8])
+			typ = "raw bytes"
+			off += 8
+		case read.FieldKindBytes16:
+			value = rawBytes(b[off:off+16])
+			typ = "raw bytes"
+			off += 16
 		case read.FieldKindPtr:
 			typ = "ptr"
 			// TODO: get ptr base type somehow?  Also for slices,chans.
-			if e, ok := emap[offset+off]; ok {
-				value = edgeLink(e)
+			if len(edges) > 0 && edges[0].FromOffset == off {
+				value = edgeLink(edges[0])
+				edges = edges[1:]
 			} else {
 				value = nonheapPtr(b[off:])
 			}
@@ -139,25 +162,32 @@ func getFields(b []byte, fields []read.Field, emap map[uint64]read.Edge, offset 
 		case read.FieldKindIface:
 			// TODO: the itab part?
 			typ = "interface{...}"
-			if e, ok := emap[offset+off+d.PtrSize]; ok {
-				value = edgeLink(e)
+			if len(edges) > 0 && edges[0].FromOffset == off+d.PtrSize {
+				value = edgeLink(edges[0])
+				edges = edges[1:]
 			} else {
+				// TODO: use itab to decide whether this is a
+				// pointer or a scalar.
 				value = nonheapPtr(b[off+d.PtrSize:])
 			}
 			off += 2 * d.PtrSize
 		case read.FieldKindEface:
 			// TODO: the type part
 			typ = "interface{}"
-			if e, ok := emap[offset+off+d.PtrSize]; ok {
-				value = edgeLink(e)
+			if len(edges) > 0 && edges[0].FromOffset == off+d.PtrSize {
+				value = edgeLink(edges[0])
+				edges = edges[1:]
 			} else {
+				// TODO: use type to decide whether this is a
+				// pointer or a scalar.
 				value = nonheapPtr(b[off+d.PtrSize:])
 			}
 			off += 2 * d.PtrSize
 		case read.FieldKindString:
 			typ = "string"
-			if e, ok := emap[offset+off]; ok {
-				value = edgeLink(e)
+			if len(edges) > 0 && edges[0].FromOffset == off {
+				value = edgeLink(edges[0])
+				edges = edges[1:]
 			} else {
 				value = nonheapPtr(b[off:])
 			}
@@ -165,8 +195,9 @@ func getFields(b []byte, fields []read.Field, emap map[uint64]read.Edge, offset 
 			off += 2 * d.PtrSize
 		case read.FieldKindSlice:
 			typ = "slice"
-			if e, ok := emap[offset+off]; ok {
-				value = edgeLink(e)
+			if len(edges) > 0 && edges[0].FromOffset == off {
+				value = edgeLink(edges[0])
+				edges = edges[1:]
 			} else {
 				value = nonheapPtr(b[off:])
 			}
@@ -179,111 +210,6 @@ func getFields(b []byte, fields []read.Field, emap map[uint64]read.Edge, offset 
 		r = append(r, Field{fmt.Sprintf("<font color=LightGray>sizeclass pad %d</font>", uint64(len(b))-off), "", ""})
 	}
 	return r
-}
-
-func fields(x *read.Object) []Field {
-	// map the known edges
-	emap := map[uint64]read.Edge{}
-	for _, e := range x.Edges {
-		emap[e.FromOffset] = e
-	}
-	b := d.Contents(x)
-
-	var r []Field
-	switch x.Kind() {
-	case read.TypeKindObject:
-		if x.Type() != nil {
-			r = getFields(b, x.Type().Fields, emap, 0)
-		} else {
-			// raw data
-			if len(emap) > 0 {
-				log.Fatal("edges in raw data")
-			}
-			for i := uint64(0); i < x.Size(); i += 16 {
-				n := x.Size() - i
-				if n > 16 {
-					n = 16
-				}
-				v := ""
-				s := ""
-				for j := uint64(0); j < n; j++ {
-					c := b[i+j]
-					v += fmt.Sprintf("%.2x ", c)
-					if c <= 32 || c >= 127 {
-						c = 46
-					}
-					s += fmt.Sprintf("%c", c)
-				}
-				r = append(r, Field{fmt.Sprintf("offset %x", i), "raw bytes", v + " | " + html.EscapeString(s)})
-			}
-		}
-	case read.TypeKindArray:
-		n := x.Size() / x.Type().Size
-		for i := uint64(0); i < n; i++ {
-			s := getFields(b[i*x.Type().Size:(i+1)*x.Type().Size], x.Type().Fields, emap, i*x.Type().Size)
-			for _, f := range s {
-				if f.Name == "" {
-					f.Name = fmt.Sprintf("%d", i)
-				} else {
-					f.Name = fmt.Sprintf("%d.%s", i, f.Name)
-				}
-				r = append(r, f)
-			}
-		}
-	case read.TypeKindChan:
-		fmap := chanFields[d.PtrSize]
-		if fmap == nil {
-			log.Fatal("can't find channel header info for ptr size")
-		}
-		for i := uint64(0); i < d.HChanSize; i += d.PtrSize {
-			if name, ok := fmap[i]; ok {
-				r = append(r, Field{name, "int", fmt.Sprintf("%d", readPtr(b[i:]))})
-			} else {
-				r = append(r, Field{"<font color=LightGray>chanhdr</font>", "<font color=LightGray>int</font>", fmt.Sprintf("<font color=LightGray>%d</font>", readPtr(b[i:]))})
-			}
-		}
-
-		if x.Type().Size > 0 {
-			n := (x.Size() - d.HChanSize) / x.Type().Size
-			for i := uint64(0); i < n; i++ {
-				s := getFields(b[d.HChanSize+i*x.Type().Size:d.HChanSize+(i+1)*x.Type().Size], x.Type().Fields, emap, d.HChanSize+i*x.Type().Size)
-				for _, f := range s {
-					if f.Name == "" {
-						f.Name = fmt.Sprintf("%d", i)
-					} else {
-						f.Name = fmt.Sprintf("%d.%s", i, f.Name)
-					}
-					r = append(r, f)
-				}
-			}
-		}
-	case read.TypeKindConservative:
-		for i := uint64(0); i < x.Size(); i += d.PtrSize {
-			if e, ok := emap[i]; ok {
-				r = append(r, Field{fmt.Sprintf("~%d", i), "ptr", edgeLink(e)})
-			} else {
-				r = append(r, Field{fmt.Sprintf("~%d", i), "ptr", nonheapPtr(b[i:])})
-			}
-		}
-	}
-	return r
-}
-
-// needs to be kept in sync with src/pkg/runtime/chan.h in
-// the main Go distribution.
-var chanFields = map[uint64]map[uint64]string{
-	4: map[uint64]string{
-		0:  "len",
-		4:  "cap",
-		20: "next send index",
-		24: "next receive index",
-	},
-	8: map[uint64]string{
-		0:  "len",
-		8:  "cap",
-		32: "next send index",
-		40: "next receive index",
-	},
 }
 
 type objInfo struct {
@@ -336,11 +262,6 @@ border:1px solid grey;
 {{end}}
 <h3>Reachable Memory</h3>
 {{.ReachableMem}} bytes
-<h3>Roots that reach here</h3>
-{{range .Roots}}
-{{.}}
-<br>
-{{end}}
 </tt>
 </body>
 </html>
@@ -380,7 +301,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		y := queue[0]
 		queue = queue[1:]
 		reachableMem += y.Size()
-		for _, e := range y.Edges {
+		for _, e := range d.Edges(y) {
 			if _, ok := h[e.To]; !ok {
 				h[e.To] = struct{}{}
 				queue = append(queue, e.To)
@@ -388,7 +309,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), fields(x), referrers[x], reachableMem, nil}); err != nil {
+	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), getFields(d.Contents(x), x.Ft.Fields, d.Edges(x)), referrers[x], reachableMem, nil}); err != nil {
 		log.Print(err)
 	}
 }
@@ -577,11 +498,7 @@ border:1px solid grey;
 func globalsHandler(w http.ResponseWriter, r *http.Request) {
 	var f []Field
 	for _, x := range []*read.Data{d.Data, d.Bss} {
-		emap := map[uint64]read.Edge{}
-		for _, e := range x.Edges {
-			emap[e.FromOffset] = e
-		}
-		f = append(f, getFields(x.Data, x.Fields, emap, 0)...)
+		f = append(f, getFields(x.Data, x.Fields, x.Edges)...)
 	}
 	if err := globalsTemplate.Execute(w, f); err != nil {
 		log.Print(err)
@@ -889,11 +806,7 @@ func frameHandler(w http.ResponseWriter, r *http.Request) {
 	i.Goroutine = fmt.Sprintf("<a href=go?id=%x>goroutine %x</a>", f.Goroutine.Addr, f.Goroutine.Addr)
 
 	// variables
-	emap := map[uint64]read.Edge{}
-	for _, e := range f.Edges {
-		emap[e.FromOffset] = e
-	}
-	i.Vars = getFields(f.Data, f.Fields, emap, 0)
+	i.Vars = getFields(f.Data, f.Fields, f.Edges)
 
 	if err := frameTemplate.Execute(w, i); err != nil {
 		log.Print(err)
@@ -973,7 +886,7 @@ func prepare() {
 	// compute referrers
 	referrers = map[*read.Object][]string{}
 	for _, x := range d.Objects {
-		for _, e := range x.Edges {
+		for _, e := range d.Edges(x) {
 			referrers[e.To] = append(referrers[e.To], edgeSource(x, e))
 		}
 	}
@@ -1009,6 +922,59 @@ func prepare() {
 		s += e.To.Size()
 	}
 	fmt.Println("type data", s)
+}
+
+func dom() {
+	n := len(d.Objects)
+
+	// compute postorder traversal
+	// object states:
+	// 0 - not seen yet
+	// 1 - seen, added to queue
+	// 2 - seen, already expanded children
+	// 3 - added to postorder
+	post := make([]*read.Object, 0, n)
+	state := make(map[*read.Object]byte, n)
+	var q []*read.Object // lifo queue, holds states 1 and 2
+	for _, x := range d.Objects {
+		if state[x] != 0 {
+			continue
+		}
+		state[x] = 1
+		q = q[:0]
+		q = append(q, x)
+		for len(q) > 0 {
+			y := q[0]
+			if state[y] == 2 {
+				q = q[1:]
+				post = append(post, y)
+				// state[y] = 3: not really needed
+			} else {
+				state[y] = 2
+				for _, e := range d.Edges(y) {
+					z := e.To
+					if state[z] == 0 {
+						state[z] = 1
+						q = append(q, z)
+					}
+				}
+			}
+		}
+	}
+
+	// compute dominance
+	idom := make([]*read.Object, 0, n)
+	done := false
+	for !done {
+		done = true
+		for i := n - 1; i >= 0; i-- {
+			x := post[i]
+			for _, y := range d.Edges(x) { // TODO: reverse edges
+				_ = y
+			}
+		}
+	}
+	_ = idom
 }
 
 func readPtr(b []byte) uint64 {

@@ -14,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 )
 
 type FieldKind int
@@ -27,19 +28,22 @@ const (
 	FieldKindIface            = 4
 	FieldKindEface            = 5
 
-	FieldKindBool       = 6
+	FieldKindBool FieldKind      = 6
 	FieldKindUInt8      = 7
 	FieldKindSInt8      = 8
 	FieldKindUInt16     = 9
 	FieldKindSInt16     = 10
-	FieldKindUInt32     = 11
+	FieldKindUInt32  FieldKind   = 11
 	FieldKindSInt32     = 12
-	FieldKindUInt64     = 13
+	FieldKindUInt64  FieldKind  = 13
 	FieldKindSInt64     = 14
 	FieldKindFloat32    = 15
 	FieldKindFloat64    = 16
 	FieldKindComplex64  = 17
 	FieldKindComplex128 = 18
+
+	FieldKindBytes8     = 19
+	FieldKindBytes16    = 20
 
 	TypeKindObject       TypeKind = 0
 	TypeKindArray                 = 1
@@ -73,6 +77,12 @@ const (
 	dw_ate_float         = 4 // float32/float64
 	dw_ate_signed        = 5 // int8/int16/int32/int64/int
 	dw_ate_unsigned      = 7 // uint8/uint16/uint32/uint64/uint/uintptr
+
+	// Size of buckets for findObj.  Bigger buckets use less memory
+	// but make findObj take longer.  256 byte buckets use about 3%
+	// of the total heap size and require us to look at at most
+	// 32 objects.
+	bucketSize = 256
 )
 
 type Dump struct {
@@ -91,7 +101,6 @@ type Dump struct {
 	Otherroots []*OtherRoot
 	Finalizers []*Finalizer  // pending finalizers, object still live
 	QFinal     []*QFinalizer // finalizers which are ready to run
-	Itabs      []*Itab
 	Osthreads  []*OSThread
 	Memstats   *runtime.MemStats
 	Data       *Data
@@ -102,11 +111,25 @@ type Dump struct {
 	// handle to dump file
 	r io.ReaderAt
 
-	// temporary space for Data calls
-	buf []byte
+	buf []byte	// temporary space for Contents calls
+
+	edges []Edge    // temporary space for Edges calls
 
 	// list of full types, indexed by ID
 	FTList []*FullType
+
+	// map from type address to type
+	TypeMap map[uint64]*Type
+
+	// map from itab address whether the data field of an iface
+	// with that itab contains a pointer.
+	ItabMap map[uint64]bool
+
+	// array for fast lookup of objects
+	// maps (addr - HeapStart) / bucketSize to the first object
+	// that starts in those bucketSize bytes.
+	// with 8 byte ints this will consume ~3% of the dump's heap size
+	idx []int
 }
 
 type Type struct {
@@ -124,6 +147,7 @@ type FullType struct {
 	Kind TypeKind
 	Size uint64
 	Name string
+	Fields []Field
 }
 
 // An edge is a directed connection between two objects.  The source
@@ -136,7 +160,7 @@ type Edge struct {
 
 	// name of field / offset within field of source object, if known
 	FieldName   string
-	FieldOffset uint64
+	FieldOffset uint64 // TODO: remove
 }
 
 // Object represents an object in the heap.
@@ -144,7 +168,6 @@ type Edge struct {
 type Object struct {
 	Ft     *FullType
 	offset int64 // position of object contents in dump file
-	Edges  []Edge
 	Addr   uint64
 }
 
@@ -170,6 +193,73 @@ func (d *Dump) Contents(x *Object) []byte {
 		log.Fatal(err)
 	}
 	return b
+}
+
+// findObj returns the object containing the address addr, or nil if no object contains addr.
+func (d *Dump) findObj(addr uint64) *Object {
+	if addr < d.HeapStart || addr >= d.HeapEnd { // quick exit.  Includes nil.
+		return nil
+	}
+	// linear search among all the objects that map to the same bucketSize byte bucket.
+	for i := d.idx[(addr - d.HeapStart) / bucketSize]; i < len(d.Objects); i++ {
+		x := d.Objects[i]
+		if addr < x.Addr {
+			return nil
+		}
+		if addr < x.Addr + x.Ft.Size {
+			return x
+		}
+	}
+	return nil
+}
+
+func (d *Dump) Edges(x *Object) []Edge {
+	e := d.edges[:0]
+	b := d.Contents(x)
+	for _, f := range x.Ft.Fields {
+		switch f.Kind {
+		case FieldKindPtr, FieldKindString, FieldKindSlice:
+			p := readPtr(d, b[f.Offset:])
+			y := d.findObj(p)
+			if y != nil {
+				e = append(e, Edge{y, f.Offset, p - y.Addr, f.Name, 0})
+			}
+		case FieldKindEface:
+			taddr := readPtr(d, b[f.Offset:])
+			if taddr != 0 {
+				t := d.TypeMap[taddr]
+				if t == nil {
+					log.Fatal("can't find eface type", taddr)
+				}
+				if t.efaceptr {
+					p := readPtr(d, b[f.Offset+d.PtrSize:])
+					y := d.findObj(p)
+					if y != nil {
+						e = append(e, Edge{y, f.Offset+d.PtrSize, p - y.Addr, f.Name, 0})
+					}
+				}
+			}
+		case FieldKindIface:
+			itabaddr := readPtr(d, b[f.Offset:])
+			if itabaddr != 0 {
+				ptr, ok := d.ItabMap[itabaddr]
+				if !ok {
+					log.Fatal("can't find itab", itabaddr)
+				}
+				if ptr {
+					p := readPtr(d, b[f.Offset+d.PtrSize:])
+					y := d.findObj(p)
+					if y != nil {
+						e = append(e, Edge{y, f.Offset+d.PtrSize, p - y.Addr, f.Name, 0})
+					}
+				}
+			}
+		default:
+			continue
+		}
+	}
+	d.edges = e
+	return e
 }
 
 type OtherRoot struct {
@@ -222,13 +312,6 @@ type Data struct {
 	Data   []byte
 	Fields []Field
 	Edges  []Edge
-}
-
-// For the given itab value, is the corresponding
-// interface data field a pointer?
-type Itab struct {
-	addr uint64
-	ptr  bool
 }
 
 type OSThread struct {
@@ -370,6 +453,38 @@ type tkey struct {
 	size    uint64
 }
 
+func (d *Dump) makeFullType(typaddr uint64, kind TypeKind, size uint64) *FullType {
+	t := d.TypeMap[typaddr]
+	if typaddr != 0 && t == nil {
+		log.Fatal("types appear before use of that type")
+	}
+	var name string
+	switch kind {
+	case TypeKindObject:
+		if t != nil {
+			name = t.Name
+		} else {
+			name = fmt.Sprintf("noptr%d", size)
+		}
+	case TypeKindArray:
+		name = fmt.Sprintf("{%d}%s", size/t.Size, t.Name)
+	case TypeKindChan:
+		if d.HChanSize == 0 {
+			log.Fatal("hchansize must be before objects")
+		}
+		if t.Size > 0 {
+			name = fmt.Sprintf("chan{%d}%s", (size-d.HChanSize)/t.Size, t.Name)
+		} else {
+			name = fmt.Sprintf("chan{inf}%s", t.Name)
+		}
+	case TypeKindConservative:
+		name = fmt.Sprintf("conservative%d", size)
+	}
+	ft := &FullType{len(d.FTList), t, kind, size, name, nil}
+	d.FTList = append(d.FTList, ft)
+	return ft
+}
+
 // Reads heap dump into memory.
 func rawRead(filename string) *Dump {
 	file, err := os.Open(filename)
@@ -389,7 +504,8 @@ func rawRead(filename string) *Dump {
 
 	var d Dump
 	d.r = file
-	tmap := map[uint64]*Type{}    // typaddr to type
+	d.ItabMap = map[uint64]bool{}
+	d.TypeMap = map[uint64]*Type{}
 	ftmap := map[tkey]*FullType{} // full type dedup
 	for {
 		kind := readUint64(r)
@@ -403,35 +519,8 @@ func rawRead(filename string) *Dump {
 			k := tkey{typaddr, kind, size}
 			ft := ftmap[k]
 			if ft == nil {
-				t := tmap[typaddr]
-				if typaddr != 0 && t == nil {
-					log.Fatal("types appear before use of that type")
-				}
-				var name string
-				switch kind {
-				case TypeKindObject:
-					if t != nil {
-						name = t.Name
-					} else {
-						name = fmt.Sprintf("noptr%d", size)
-					}
-				case TypeKindArray:
-					name = fmt.Sprintf("{%d}%s", size/t.Size, t.Name)
-				case TypeKindChan:
-					if d.HChanSize == 0 {
-						log.Fatal("hchansize must be before objects")
-					}
-					if t.Size > 0 {
-						name = fmt.Sprintf("chan{%d}%s", (size-d.HChanSize)/t.Size, t.Name)
-					} else {
-						name = fmt.Sprintf("chan{inf}%s", t.Name)
-					}
-				case TypeKindConservative:
-					name = fmt.Sprintf("conservative%d", size)
-				}
-				ft = &FullType{len(d.FTList), t, kind, size, name}
+				ft = d.makeFullType(typaddr, kind, size)
 				ftmap[k] = ft
-				d.FTList = append(d.FTList, ft)
 			}
 			obj.Ft = ft
 			obj.offset = r.Count()
@@ -451,8 +540,12 @@ func rawRead(filename string) *Dump {
 			typ.Name = readString(r)
 			typ.efaceptr = readBool(r)
 			typ.Fields = readFields(r)
-			d.Types = append(d.Types, typ)
-			tmap[typ.Addr] = typ
+			// Note: there may be duplicate type records in a dump.
+			// The duplicates get thrown away here.
+			if _, ok := d.TypeMap[typ.Addr]; !ok {
+				d.TypeMap[typ.Addr] = typ
+				d.Types = append(d.Types, typ)
+			}
 		case tagGoRoutine:
 			g := &GoRoutine{}
 			g.Addr = readUint64(r)
@@ -522,10 +615,9 @@ func rawRead(filename string) *Dump {
 			t.Fields = readFields(r)
 			d.Bss = t
 		case tagItab:
-			t := &Itab{}
-			t.addr = readUint64(r)
-			t.ptr = readBool(r)
-			d.Itabs = append(d.Itabs, t)
+			addr := readUint64(r)
+			ptr := readBool(r)
+			d.ItabMap[addr] = ptr
 		case tagOSThread:
 			t := &OSThread{}
 			t.addr = readUint64(r)
@@ -1052,8 +1144,6 @@ func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *Heap {
 // various maps used to link up data structures
 type LinkInfo struct {
 	dump    *Dump
-	types   map[uint64]*Type
-	itabs   map[uint64]*Itab
 	objects *Heap
 }
 
@@ -1115,7 +1205,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 			edges = info.appendEdge(edges, data, off, f, arrayidx)
 			tp := readPtr(info.dump, data[off:])
 			if tp != 0 {
-				t := info.types[tp]
+				t := info.dump.TypeMap[tp]
 				if t == nil {
 					//log.Fatal("can't find eface type")
 					continue
@@ -1127,12 +1217,7 @@ func (info *LinkInfo) appendFields(edges []Edge, data []byte, fields []Field, of
 		case FieldKindIface:
 			tp := readPtr(info.dump, data[off:])
 			if tp != 0 {
-				t := info.itabs[tp]
-				if t == nil {
-					log.Fatal("can't find iface tab")
-					//continue
-				}
-				if t.ptr {
+				if info.dump.ItabMap[tp] {
 					edges = info.appendEdge(edges, data, off+info.dump.PtrSize, f, arrayidx)
 				}
 			}
@@ -1194,7 +1279,7 @@ func nameWithDwarf(d *Dump, execname string) {
 			// with fields from the Dwarf info.
 			t.Fields = df
 		} else {
-			log.Printf("inconsistent type for %s\n", t.Name)
+			log.Print("inconsistent type for", t.Name)
 		}
 	}
 
@@ -1258,19 +1343,22 @@ func nameWithDwarf(d *Dump, execname string) {
 }
 
 func link(d *Dump) {
+	// sort objects in increasing address order
+	sort.Sort(ByAddr(d.Objects))
+
+	// initialize index array
+	idx := make([]int, (d.HeapEnd - d.HeapStart) / bucketSize)
+	for i := 0; i < len(idx); i++ {
+		idx[i] = len(d.Objects)
+	}
+	for i := len(d.Objects) - 1; i >= 0; i-- {
+		idx[(d.Objects[i].Addr - d.HeapStart) / bucketSize] = i
+	}
+	d.idx = idx
+
 	// initialize some maps used for linking
 	var info LinkInfo
 	info.dump = d
-	info.types = make(map[uint64]*Type, len(d.Types))
-	info.itabs = make(map[uint64]*Itab, len(d.Itabs))
-	for _, x := range d.Types {
-		// Note: there may be duplicate type records in a dump.
-		// The duplicates get thrown away here.
-		info.types[x.Addr] = x
-	}
-	for _, x := range d.Itabs {
-		info.itabs[x.addr] = x
-	}
 	frames := make(map[frameKey]*StackFrame, len(d.Frames))
 	for _, x := range d.Frames {
 		frames[frameKey{x.Addr, x.Depth}] = x
@@ -1338,34 +1426,9 @@ func link(d *Dump) {
 		}
 	}
 
-	// link objects to each other
-	for _, x := range d.Objects {
-		t := x.Ft.Typ
-		if t == nil && x.Ft.Kind != TypeKindConservative {
-			continue // typeless objects have no pointers
-		}
-		b := d.Contents(x)
-		switch x.Ft.Kind {
-		case TypeKindObject:
-			x.Edges = info.appendFields(x.Edges, b, t.Fields, 0, -1)
-		case TypeKindArray:
-			for i := uint64(0); i <= x.Size()-t.Size; i += t.Size {
-				x.Edges = info.appendFields(x.Edges, b, t.Fields, i, int64(i/t.Size))
-			}
-		case TypeKindChan:
-			if t.Size > 0 {
-				for i := d.HChanSize; i <= x.Size()-t.Size; i += t.Size {
-					x.Edges = info.appendFields(x.Edges, b, t.Fields, i, int64(i/t.Size))
-				}
-			}
-		case TypeKindConservative:
-			for i := uint64(0); i < x.Size(); i += d.PtrSize {
-				x.Edges = info.appendEdge(x.Edges, b, i, Field{FieldKindPtr, i, fmt.Sprintf("~%d", i)}, -1)
-			}
-		}
-	}
-
 	// Add links for finalizers
+	// TODO: how do we represent these?
+	/*
 	for _, f := range d.Finalizers {
 		x := info.findObj(f.obj)
 		for _, addr := range []uint64{f.fn, f.fint, f.ot} {
@@ -1375,6 +1438,7 @@ func link(d *Dump) {
 			}
 		}
 	}
+*/
 	for _, f := range d.QFinal {
 		for _, addr := range []uint64{f.obj, f.fn, f.fint, f.ot} {
 			x := info.findObj(addr)
@@ -1407,6 +1471,103 @@ func nameFallback(d *Dump) {
 	}
 }
 
+// needs to be kept in sync with src/pkg/runtime/chan.h in
+// the main Go distribution.
+var chanFields = map[uint64]map[uint64]string{
+	4: map[uint64]string{
+		0:  "len",
+		4:  "cap",
+		20: "next send index",
+		24: "next receive index",
+	},
+	8: map[uint64]string{
+		0:  "len",
+		8:  "cap",
+		32: "next send index",
+		40: "next receive index",
+	},
+}
+
+func nameFullTypes(d *Dump) {
+	for _, ft := range d.FTList {
+		t := ft.Typ
+		switch {
+		case ft.Typ == nil && ft.Kind == TypeKindConservative:
+			// could all be pointers
+			for i := uint64(0); i < ft.Size; i += d.PtrSize {
+				ft.Fields = append(ft.Fields, Field{FieldKindPtr, i, fmt.Sprintf("~%d", i)})
+			}
+		case ft.Typ == nil && ft.Kind == TypeKindObject:
+			// no pointers.  Emit psuedo field records
+			for i := uint64(0); i < ft.Size; i += 16 {
+				s := ft.Size - i
+				if s > 16 {
+					s = 16
+				}
+				switch s {
+				case 16:
+					ft.Fields = append(ft.Fields, Field{FieldKindBytes16, i, fmt.Sprintf("offset %x", i)})
+				case 8:
+					ft.Fields = append(ft.Fields, Field{FieldKindBytes8, i, fmt.Sprintf("offset %x", i)})
+				default:
+					log.Fatalf("weird size obj", ft.Size)
+				}
+			}
+		case ft.Typ != nil && ft.Kind == TypeKindObject:
+			ft.Fields = ft.Typ.Fields
+		case ft.Typ != nil && ft.Kind == TypeKindArray:
+			t := ft.Typ
+			for i := uint64(0); i <= ft.Size-t.Size; i += t.Size {
+				for _, f := range t.Fields {
+					var name string
+					if f.Name != "" {
+						name = fmt.Sprintf("%d.%s", i/t.Size, f.Name)
+					} else {
+						name = fmt.Sprintf("%d", i/t.Size)
+					}
+					ft.Fields = append(ft.Fields, Field{f.Kind, i + f.Offset, name})
+				}
+			}
+		case ft.Typ != nil && ft.Kind == TypeKindChan:
+			fmap := chanFields[d.PtrSize]
+			if fmap == nil {
+				log.Fatal("can't find channel header info for ptr size")
+			}
+			k := FieldKindUInt64
+			if d.PtrSize == 4 {
+				k = FieldKindUInt32
+			}
+			for i := uint64(0); i < d.HChanSize; i += d.PtrSize {
+				if name, ok := fmap[i]; ok {
+					ft.Fields = append(ft.Fields, Field{k, i, name})
+				} else {
+					ft.Fields = append(ft.Fields, Field{k, i, "chanhdr"})
+				}
+			}
+			if t.Size > 0 {
+				for i := d.HChanSize; i <= ft.Size-t.Size; i += t.Size {
+					for _, f := range t.Fields {
+						var name string
+						if f.Name != "" {
+							name = fmt.Sprintf("%d.%s", (i-d.HChanSize)/t.Size, f.Name)
+						} else {
+							name = fmt.Sprintf("%d", (i-d.HChanSize)/t.Size)
+						}
+						ft.Fields = append(ft.Fields, Field{f.Kind, i + f.Offset, name})
+					}
+				}
+			}
+		default:
+			log.Fatal("bad type/kind combo", ft.Typ, ft.Kind)
+		}
+	}
+}
+
+type ByAddr []*Object
+func (a ByAddr) Len() int           { return len(a) }
+func (a ByAddr) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByAddr) Less(i, j int) bool { return a[i].Addr < a[j].Addr }
+
 func Read(dumpname, execname string) *Dump {
 	d := rawRead(dumpname)
 	if execname != "" {
@@ -1414,6 +1575,7 @@ func Read(dumpname, execname string) *Dump {
 	} else {
 		nameFallback(d)
 	}
+	nameFullTypes(d)
 	link(d)
 	return d
 }
