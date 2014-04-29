@@ -418,8 +418,10 @@ func rawRead(filename string) *Dump {
 				case TypeKindArray:
 					name = fmt.Sprintf("{%d}%s", size/t.Size, t.Name)
 				case TypeKindChan:
+					if d.HChanSize == 0 {
+						log.Fatal("hchansize must be before objects")
+					}
 					if t.Size > 0 {
-						// TODO: document that HChanSize must come before a channel object
 						name = fmt.Sprintf("chan{%d}%s", (size-d.HChanSize)/t.Size, t.Name)
 					} else {
 						name = fmt.Sprintf("chan{inf}%s", t.Name)
