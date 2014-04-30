@@ -169,6 +169,7 @@ type Object struct {
 	Ft     *FullType
 	offset int64 // position of object contents in dump file
 	Addr   uint64
+	Ref *Object // for use by callers
 }
 
 func (x *Object) Size() uint64 {

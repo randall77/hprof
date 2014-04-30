@@ -309,7 +309,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), getFields(d.Contents(x), x.Ft.Fields, d.Edges(x)), referrers[x], reachableMem, nil}); err != nil {
+	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), getFields(d.Contents(x), x.Ft.Fields, d.Edges(x)), getReferrers(x), reachableMem, nil}); err != nil {
 		log.Print(err)
 	}
 }
@@ -871,7 +871,58 @@ type bucket struct {
 // histogram by full type id
 var byType []bucket
 
-var referrers map[*read.Object][]string
+var ref2 map[*read.Object][]*read.Object
+
+func getReferrers(x *read.Object) []string {
+	var r []string
+	if x.Ref != nil {
+		for _, e := range d.Edges(x.Ref) {
+			if e.To == x {
+				r = append(r, edgeSource(x.Ref, e))
+			}
+		}
+	}
+	for _, y := range ref2[x] {
+		for _, e := range d.Edges(y) {
+			if e.To == x {
+				r = append(r, edgeSource(y, e))
+			}
+		}
+	}
+	for _, s := range []*read.Data{d.Data, d.Bss} {
+		for _, e := range s.Edges {
+			if e.To != x {
+				continue
+			}
+			v := e.FieldName
+			if e.FieldOffset != 0 {
+				v = fmt.Sprintf("%s+%d", v, e.FieldOffset)
+			}
+			v = "global " + v
+			r = append(r, v)
+		}
+	}
+	for _, f := range d.Frames {
+		for _, e := range f.Edges {
+			if e.To != x {
+				continue
+			}
+			v := e.FieldName
+			if e.FieldOffset != 0 {
+				v = fmt.Sprintf("%s+%d", v, e.FieldOffset)
+			}
+			v = fmt.Sprintf("<a href=frame?id=%x&depth=%d>%s</a>.%s", f.Addr, f.Depth, f.Name, v)
+			r = append(r, v)
+		}
+	}
+	for _, s := range d.Otherroots {
+		if s.E.To != x {
+			continue
+		}
+		r = append(r, s.Description)
+	}
+	return r
+}
 
 func prepare() {
 	// group objects by type
@@ -884,42 +935,22 @@ func prepare() {
 	}
 
 	// compute referrers
-	referrers = map[*read.Object][]string{}
+	ref2 = map[*read.Object][]*read.Object{}
 	for _, x := range d.Objects {
 		for _, e := range d.Edges(x) {
-			referrers[e.To] = append(referrers[e.To], edgeSource(x, e))
-		}
-	}
-	for _, x := range []*read.Data{d.Data, d.Bss} {
-		for _, e := range x.Edges {
-			v := e.FieldName
-			if e.FieldOffset != 0 {
-				v = fmt.Sprintf("%s+%d", v, e.FieldOffset)
+			if e.To.Ref == nil {
+				e.To.Ref = x
+			} else {
+				ref2[e.To] = append(ref2[e.To], x)
 			}
-			v = "global " + v
-			referrers[e.To] = append(referrers[e.To], v)
 		}
 	}
-	for _, f := range d.Frames {
-		for _, e := range f.Edges {
-			v := e.FieldName
-			if e.FieldOffset != 0 {
-				v = fmt.Sprintf("%s+%d", v, e.FieldOffset)
-			}
-			v = fmt.Sprintf("<a href=frame?id=%x&depth=%d>%s</a>.%s", f.Addr, f.Depth, f.Name, v)
-			referrers[e.To] = append(referrers[e.To], v)
-		}
-	}
-	for _, x := range d.Otherroots {
-		e := x.E
-		referrers[e.To] = append(referrers[e.To], x.Description)
-	}
+	fmt.Println("objects", len(d.Objects))
+	fmt.Println("multirefer", len(ref2))
 
 	s := uint64(0)
 	for _, x := range d.Otherroots {
-		e := x.E
-		referrers[e.To] = append(referrers[e.To], x.Description)
-		s += e.To.Size()
+		s += x.E.To.Size()
 	}
 	fmt.Println("type data", s)
 }
