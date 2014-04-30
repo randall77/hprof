@@ -147,11 +147,11 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			typ = "int64"
 			off += 8
 		case read.FieldKindBytes8:
-			value = rawBytes(b[off:off+8])
+			value = rawBytes(b[off : off+8])
 			typ = "raw bytes"
 			off += 8
 		case read.FieldKindBytes16:
-			value = rawBytes(b[off:off+16])
+			value = rawBytes(b[off : off+16])
 			typ = "raw bytes"
 			off += 16
 		case read.FieldKindPtr:
@@ -310,7 +310,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	info := objInfo {
+	info := objInfo{
 		d.Addr(x),
 		typeLink(d.Ft(x)),
 		d.Size(x),
@@ -325,7 +325,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type objEntry struct {
-	Id read.ObjId
+	Id   read.ObjId
 	Addr uint64
 }
 type typeInfo struct {
@@ -883,27 +883,34 @@ func main() {
 	}
 }
 
-// Map from object ID to list of objects that refer to the object.
-// It is split in two parts for efficiency.  The first inbound
-// reference is stored in ref1.  Any additional references are stored
-// in ref2.  Since most objects have only one incoming reference,
+// Map from object ID to list of objects that refer to that object.
+// It is split in two parts for efficiency.  The first inbound into x
+// is stored in ref1[x].  Any additional references are stored
+// in ref2[x].  Since most objects have only one incoming reference,
 // ref2 ends up small.
 var ref1 []read.ObjId
 var ref2 map[read.ObjId][]read.ObjId
 
 func getReferrers(x read.ObjId) []string {
 	var r []string
+	// m is for deduping referrers.  We should probably do this when building ref1/ref2.
+	m := map[read.ObjId]struct{}{}
 	if y := ref1[x]; y != read.ObjNil {
 		for _, e := range d.Edges(y) {
 			if e.To == x {
 				r = append(r, edgeSource(y, e))
+				m[y] = struct{}{}
 			}
 		}
-	}
-	for _, y := range ref2[x] {
-		for _, e := range d.Edges(y) {
-			if e.To == x {
-				r = append(r, edgeSource(y, e))
+		for _, y := range ref2[x] {
+			if _, ok := m[y]; ok {
+				continue
+			}
+			for _, e := range d.Edges(y) {
+				if e.To == x {
+					r = append(r, edgeSource(y, e))
+					m[y] = struct{}{}
+				}
 			}
 		}
 	}
@@ -912,7 +919,7 @@ func getReferrers(x read.ObjId) []string {
 			if e.To != x {
 				continue
 			}
-			r = append(r, "global " + e.FieldName)
+			r = append(r, "global "+e.FieldName)
 		}
 	}
 	for _, f := range d.Frames {
@@ -975,36 +982,41 @@ func prepare() {
 		s += d.Size(x.E.To)
 	}
 	fmt.Println("type data", s)
+	dom()
 }
 
-/*
 func dom() {
 	n := len(d.Objects)
 
 	// compute postorder traversal
 	// object states:
 	// 0 - not seen yet
-	// 1 - seen, added to queue
+	// 1 - seen, added to queue, not yet expanded children
 	// 2 - seen, already expanded children
 	// 3 - added to postorder
-	post := make([]*read.Object, 0, n)
-	state := make(map[*read.Object]byte, n)
-	var q []*read.Object // lifo queue, holds states 1 and 2
-	for _, x := range d.Objects {
+	post := make([]read.ObjId, 0, n)
+	state := make([]byte, n)
+	var q []read.ObjId // stack of work to do, holds states 1 and 2 objects
+	for i := range d.Objects {
+		x := read.ObjId(i)
 		if state[x] != 0 {
+			if state[x] != 3 {
+				log.Fatal("bad state found")
+			}
 			continue
 		}
 		state[x] = 1
 		q = q[:0]
 		q = append(q, x)
 		for len(q) > 0 {
-			y := q[0]
+			y := q[len(q)-1]
 			if state[y] == 2 {
-				q = q[1:]
+				state[y] = 3
+				q = q[:len(q)-1]
 				post = append(post, y)
-				// state[y] = 3: not really needed
 			} else {
 				state[y] = 2
+				// leave y in q
 				for _, e := range d.Edges(y) {
 					z := e.To
 					if state[z] == 0 {
@@ -1015,22 +1027,38 @@ func dom() {
 			}
 		}
 	}
+	fmt.Println(post[:100])
 
 	// compute dominance
-	idom := make([]*read.Object, 0, n)
+	dom := make([]read.ObjId, n)
+	for i := 0; i < n; i++ {
+		dom[i] = read.ObjNil
+	}
+	for _, s := range []*read.Data{d.Data, d.Bss} {
+		for _, e := range s.Edges {
+			dom[e.To] = e.To
+		}
+	}
+	var p []read.ObjId
 	done := false
 	for !done {
 		done = true
 		for i := n - 1; i >= 0; i-- {
 			x := post[i]
-			for _, y := range d.Edges(x) { // TODO: reverse edges
+			// accumulate reverse edges
+			p = p[:0]
+			if ref1[x] != read.ObjNil {
+				p = append(p, ref1[x])
+				p = append(p, ref2[x]...)
+			}
+
+			for _, y := range p {
 				_ = y
 			}
 		}
 	}
-	_ = idom
+	_ = dom
 }
-*/
 
 func readPtr(b []byte) uint64 {
 	switch d.PtrSize {

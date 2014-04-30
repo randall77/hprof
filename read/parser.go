@@ -28,22 +28,22 @@ const (
 	FieldKindIface            = 4
 	FieldKindEface            = 5
 
-	FieldKindBool FieldKind      = 6
-	FieldKindUInt8      = 7
-	FieldKindSInt8      = 8
-	FieldKindUInt16     = 9
-	FieldKindSInt16     = 10
-	FieldKindUInt32  FieldKind   = 11
-	FieldKindSInt32     = 12
-	FieldKindUInt64  FieldKind  = 13
-	FieldKindSInt64     = 14
-	FieldKindFloat32    = 15
-	FieldKindFloat64    = 16
-	FieldKindComplex64  = 17
-	FieldKindComplex128 = 18
+	FieldKindBool       FieldKind = 6
+	FieldKindUInt8                = 7
+	FieldKindSInt8                = 8
+	FieldKindUInt16               = 9
+	FieldKindSInt16               = 10
+	FieldKindUInt32     FieldKind = 11
+	FieldKindSInt32               = 12
+	FieldKindUInt64     FieldKind = 13
+	FieldKindSInt64               = 14
+	FieldKindFloat32              = 15
+	FieldKindFloat64              = 16
+	FieldKindComplex64            = 17
+	FieldKindComplex128           = 18
 
-	FieldKindBytes8     = 19
-	FieldKindBytes16    = 20
+	FieldKindBytes8  = 19
+	FieldKindBytes16 = 20
 
 	TypeKindObject       TypeKind = 0
 	TypeKindArray                 = 1
@@ -111,9 +111,9 @@ type Dump struct {
 	// handle to dump file
 	r io.ReaderAt
 
-	buf []byte	// temporary space for Contents calls
+	buf []byte // temporary space for Contents calls
 
-	edges []Edge    // temporary space for Edges calls
+	edges []Edge // temporary space for Edges calls
 
 	// list of full types, indexed by ID
 	FTList []*FullType
@@ -142,11 +142,11 @@ type Type struct {
 }
 
 type FullType struct {
-	Id   int
-	Typ  *Type
-	Kind TypeKind
-	Size uint64
-	Name string
+	Id     int
+	Typ    *Type
+	Kind   TypeKind
+	Size   uint64
+	Name   string
 	Fields []Field
 }
 
@@ -154,12 +154,12 @@ type FullType struct {
 // object is implicit.  An edge includes information about where it
 // leaves the source object and where it lands in the destination obj.
 type Edge struct {
-	To         ObjId   // index of target object in array
-	FromOffset uint64  // offset in source object where ptr was found
-	ToOffset   uint64  // offset in destination object where ptr lands
+	To         ObjId  // index of target object in array
+	FromOffset uint64 // offset in source object where ptr was found
+	ToOffset   uint64 // offset in destination object where ptr lands
 
 	// name of field in the source object, if known
-	FieldName   string
+	FieldName string
 }
 
 // Object represents an object in the heap.
@@ -207,12 +207,12 @@ func (d *Dump) findObj(addr uint64) ObjId {
 		return ObjNil
 	}
 	// linear search among all the objects that map to the same bucketSize byte bucket.
-	for i := d.idx[(addr - d.HeapStart) / bucketSize]; i < len(d.Objects); i++ {
+	for i := d.idx[(addr-d.HeapStart)/bucketSize]; i < len(d.Objects); i++ {
 		x := d.Objects[i]
 		if addr < x.Addr {
 			return ObjNil
 		}
-		if addr < x.Addr + x.Ft.Size {
+		if addr < x.Addr+x.Ft.Size {
 			return ObjId(i)
 		}
 	}
@@ -242,7 +242,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 					p := readPtr(d, b[f.Offset+d.PtrSize:])
 					y := d.findObj(p)
 					if y != ObjNil {
-						e = append(e, Edge{y, f.Offset+d.PtrSize, p - d.Objects[y].Addr, f.Name})
+						e = append(e, Edge{y, f.Offset + d.PtrSize, p - d.Objects[y].Addr, f.Name})
 					}
 				}
 			}
@@ -257,7 +257,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 					p := readPtr(d, b[f.Offset+d.PtrSize:])
 					y := d.findObj(p)
 					if y != ObjNil {
-						e = append(e, Edge{y, f.Offset+d.PtrSize, p - d.Objects[y].Addr, f.Name})
+						e = append(e, Edge{y, f.Offset + d.PtrSize, p - d.Objects[y].Addr, f.Name})
 					}
 				}
 			}
@@ -1115,8 +1115,8 @@ func argsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) map[localKey]
 }
 
 // map from global address to Field at that address
-func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *Heap {
-	h := new(Heap)
+func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *heap {
+	h := new(heap)
 	r := w.Reader()
 	for {
 		e, err := r.Next()
@@ -1324,15 +1324,15 @@ func nameWithDwarf(d *Dump, execname string) {
 
 func link(d *Dump) {
 	// sort objects in increasing address order
-	sort.Sort(ByAddr(d.Objects))
+	sort.Sort(byAddr(d.Objects))
 
 	// initialize index array
-	idx := make([]int, (d.HeapEnd - d.HeapStart) / bucketSize)
+	idx := make([]int, (d.HeapEnd-d.HeapStart)/bucketSize)
 	for i := 0; i < len(idx); i++ {
 		idx[i] = len(d.Objects)
 	}
 	for i := len(d.Objects) - 1; i >= 0; i-- {
-		idx[(d.Objects[i].Addr - d.HeapStart) / bucketSize] = i
+		idx[(d.Objects[i].Addr-d.HeapStart)/bucketSize] = i
 	}
 	d.idx = idx
 
@@ -1401,16 +1401,16 @@ func link(d *Dump) {
 	// Add links for finalizers
 	// TODO: how do we represent these?
 	/*
-	for _, f := range d.Finalizers {
-		x := d.findObj(f.obj)
-		for _, addr := range []uint64{f.fn, f.fint, f.ot} {
-			y := d.findObj(addr)
-			if x != nil && y != nil {
-				x.Edges = append(x.Edges, Edge{y, 0, addr - y.Addr, "finalizer", 0})
+		for _, f := range d.Finalizers {
+			x := d.findObj(f.obj)
+			for _, addr := range []uint64{f.fn, f.fint, f.ot} {
+				y := d.findObj(addr)
+				if x != nil && y != nil {
+					x.Edges = append(x.Edges, Edge{y, 0, addr - y.Addr, "finalizer", 0})
+				}
 			}
 		}
-	}
-*/
+	*/
 	for _, f := range d.QFinal {
 		for _, addr := range []uint64{f.obj, f.fn, f.fint, f.ot} {
 			x := d.findObj(addr)
@@ -1535,10 +1535,11 @@ func nameFullTypes(d *Dump) {
 	}
 }
 
-type ByAddr []*Object
-func (a ByAddr) Len() int           { return len(a) }
-func (a ByAddr) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByAddr) Less(i, j int) bool { return a[i].Addr < a[j].Addr }
+type byAddr []*Object
+
+func (a byAddr) Len() int           { return len(a) }
+func (a byAddr) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a byAddr) Less(i, j int) bool { return a[i].Addr < a[j].Addr }
 
 func Read(dumpname, execname string) *Dump {
 	d := rawRead(dumpname)
