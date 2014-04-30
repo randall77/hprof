@@ -32,13 +32,29 @@ func typeLink(ft *read.FullType) string {
 	return fmt.Sprintf("<a href=\"type?id=%d\">%s</a>", ft.Id, ft.Name)
 }
 
+func objLink(x read.ObjId) string {
+	return fmt.Sprintf("<a href=obj?id=%d>object %x</a>", x, d.Addr(x))
+}
+
 // returns an html string representing the target of an Edge
 func edgeLink(e read.Edge) string {
-	value := fmt.Sprintf("<a href=obj?id=%x>object %x</a>", e.To.Addr, e.To.Addr)
+	s := objLink(e.To)
 	if e.ToOffset != 0 {
-		value = fmt.Sprintf("%s+%d", value, e.ToOffset)
+		s = fmt.Sprintf("%s+%d", s, e.ToOffset)
 	}
-	return value
+	return s
+}
+
+// returns an html string representing the source of an Edge
+func edgeSource(x read.ObjId, e read.Edge) string {
+	s := objLink(x)
+	if e.FieldName != "" {
+		s = fmt.Sprintf("%s.%s", s, e.FieldName)
+	}
+	if e.ToOffset != 0 {
+		s = fmt.Sprintf("%s+%d", s, e.ToOffset)
+	}
+	return s
 }
 
 // the first d.PtrSize bytes of b contain a pointer.  Return html
@@ -53,18 +69,6 @@ func nonheapPtr(b []byte) string {
 	}
 }
 
-func edgeSource(x *read.Object, e read.Edge) string {
-	if e.FieldName != "" {
-		s := fmt.Sprintf("<a href=obj?id=%x>object %x</a> %s", x.Addr, x.Addr, e.FieldName)
-		if e.FieldOffset != 0 {
-			s = fmt.Sprintf("%s.%d", s, e.FieldOffset)
-		}
-		return s
-	} else {
-		return fmt.Sprintf("<a href=obj?id=%x>object %x</a>+%d", x.Addr, x.Addr, e.FromOffset)
-	}
-}
-
 // display field
 type Field struct {
 	Name  string
@@ -72,6 +76,7 @@ type Field struct {
 	Value string
 }
 
+// rawBytes generates an html string representing the given raw bytes
 func rawBytes(b []byte) string {
 	v := ""
 	s := ""
@@ -85,8 +90,8 @@ func rawBytes(b []byte) string {
 	return v + " | " + html.EscapeString(s)
 }
 
-// getFields uses the data in b to fill in the values for the fields passed in.
-// edges is a map recording known connecting edges, adjusted with offset.
+// getFields uses the data in b to fill in the values for the given field list.
+// edges is a list of known connecting out edges.
 func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 	var r []Field
 	off := uint64(0)
@@ -213,7 +218,7 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 }
 
 type objInfo struct {
-	Id           uint64
+	Addr         uint64
 	Typ          string
 	Size         uint64
 	Fields       []Field
@@ -235,11 +240,11 @@ table, td, th
 border:1px solid grey;
 }
 </style>
-<title>Object {{printf "%x" .Id}}</title>
+<title>Object {{printf "%x" .Addr}}</title>
 </head>
 <body>
 <tt>
-<h2>Object {{printf "%x" .Id}} : {{.Typ}}</h2>
+<h2>Object {{printf "%x" .Addr}} : {{.Typ}}</h2>
 <h3>{{.Size}} bytes</h3>
 <table>
 <tr>
@@ -274,33 +279,29 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id parameter missing", 405)
 		return
 	}
-	addr, err := strconv.ParseUint(v[0], 16, 64)
+	id, err := strconv.ParseUint(v[0], 10, 64)
 	if err != nil {
 		http.Error(w, err.Error(), 405)
 		return
 	}
 
-	var x *read.Object
-	for _, y := range d.Objects {
-		if y.Addr == addr {
-			x = y
-			break
-		}
-	}
-	if x == nil {
+	if int(id) >= len(d.Objects) {
 		http.Error(w, "object not found", 405)
 		return
 	}
+	x := read.ObjId(id)
 
+	// compute amount of reachable memory.
+	// TODO: do as a preprocess?
 	reachableMem := uint64(0)
-	h := map[*read.Object]struct{}{}
-	var queue []*read.Object
+	h := map[read.ObjId]struct{}{}
+	var queue []read.ObjId
 	h[x] = struct{}{}
 	queue = append(queue, x)
 	for len(queue) > 0 {
 		y := queue[0]
 		queue = queue[1:]
-		reachableMem += y.Size()
+		reachableMem += d.Size(y)
 		for _, e := range d.Edges(y) {
 			if _, ok := h[e.To]; !ok {
 				h[e.To] = struct{}{}
@@ -309,15 +310,28 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := objTemplate.Execute(w, objInfo{x.Addr, typeLink(x.Ft), x.Size(), getFields(d.Contents(x), x.Ft.Fields, d.Edges(x)), getReferrers(x), reachableMem, nil}); err != nil {
+	info := objInfo {
+		d.Addr(x),
+		typeLink(d.Ft(x)),
+		d.Size(x),
+		getFields(d.Contents(x), d.Ft(x).Fields, d.Edges(x)),
+		getReferrers(x),
+		reachableMem,
+		nil,
+	}
+	if err := objTemplate.Execute(w, info); err != nil {
 		log.Print(err)
 	}
 }
 
+type objEntry struct {
+	Id read.ObjId
+	Addr uint64
+}
 type typeInfo struct {
 	Name      string
 	Size      uint64
-	Instances []*read.Object
+	Instances []string
 }
 
 var typeTemplate = template.Must(template.New("type").Parse(`
@@ -332,7 +346,7 @@ var typeTemplate = template.Must(template.New("type").Parse(`
 <h3>Instances</h3>
 <table>
 {{range .Instances}}
-<tr><td><a href=obj?id={{printf "%x" .Addr}}>object {{printf "%x" .Addr}}</a></td></tr>
+<tr><td>{{.}}</td></tr>
 {{end}}
 </table>
 </tt>
@@ -359,7 +373,13 @@ func typeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ft := d.FTList[id]
-	if err := typeTemplate.Execute(w, typeInfo{ft.Name, ft.Size, byType[ft.Id].objects}); err != nil {
+	var info typeInfo
+	info.Name = ft.Name
+	info.Size = ft.Size
+	for _, x := range byType[ft.Id].objects {
+		info.Instances = append(info.Instances, objLink(x))
+	}
+	if err := typeTemplate.Execute(w, info); err != nil {
 		log.Print(err)
 	}
 }
@@ -863,22 +883,20 @@ func main() {
 	}
 }
 
-type bucket struct {
-	bytes   uint64
-	objects []*read.Object
-}
+// Map from object ID to list of objects that refer to the object.
+// It is split in two parts for efficiency.  The first inbound
+// reference is stored in ref1.  Any additional references are stored
+// in ref2.  Since most objects have only one incoming reference,
+// ref2 ends up small.
+var ref1 []read.ObjId
+var ref2 map[read.ObjId][]read.ObjId
 
-// histogram by full type id
-var byType []bucket
-
-var ref2 map[*read.Object][]*read.Object
-
-func getReferrers(x *read.Object) []string {
+func getReferrers(x read.ObjId) []string {
 	var r []string
-	if x.Ref != nil {
-		for _, e := range d.Edges(x.Ref) {
+	if y := ref1[x]; y != read.ObjId(-1) {
+		for _, e := range d.Edges(y) {
 			if e.To == x {
-				r = append(r, edgeSource(x.Ref, e))
+				r = append(r, edgeSource(y, e))
 			}
 		}
 	}
@@ -924,22 +942,37 @@ func getReferrers(x *read.Object) []string {
 	return r
 }
 
+type bucket struct {
+	bytes   uint64
+	objects []read.ObjId
+}
+
+// histogram by full type id
+var byType []bucket
+
 func prepare() {
 	// group objects by type
 	byType = make([]bucket, len(d.FTList))
-	for _, x := range d.Objects {
-		b := byType[x.Ft.Id]
-		b.bytes += x.Size()
+	for i := range d.Objects {
+		x := read.ObjId(i)
+		tid := d.Ft(x).Id
+		b := byType[tid]
+		b.bytes += d.Size(x)
 		b.objects = append(b.objects, x)
-		byType[x.Ft.Id] = b
+		byType[tid] = b
 	}
 
 	// compute referrers
-	ref2 = map[*read.Object][]*read.Object{}
-	for _, x := range d.Objects {
+	ref1 = make([]read.ObjId, len(d.Objects))
+	for i := range d.Objects {
+		ref1[i] = read.ObjId(-1)
+	}
+	ref2 = map[read.ObjId][]read.ObjId{}
+	for i := range d.Objects {
+		x := read.ObjId(i)
 		for _, e := range d.Edges(x) {
-			if e.To.Ref == nil {
-				e.To.Ref = x
+			if ref1[e.To] < 0 {
+				ref1[e.To] = x
 			} else {
 				ref2[e.To] = append(ref2[e.To], x)
 			}
@@ -950,11 +983,12 @@ func prepare() {
 
 	s := uint64(0)
 	for _, x := range d.Otherroots {
-		s += x.E.To.Size()
+		s += d.Size(x.E.To)
 	}
 	fmt.Println("type data", s)
 }
 
+/*
 func dom() {
 	n := len(d.Objects)
 
@@ -1007,6 +1041,7 @@ func dom() {
 	}
 	_ = idom
 }
+*/
 
 func readPtr(b []byte) uint64 {
 	switch d.PtrSize {
