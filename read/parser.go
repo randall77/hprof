@@ -172,6 +172,10 @@ type Object struct {
 
 type ObjId int
 
+const (
+	ObjNil ObjId = -1
+)
+
 func (d *Dump) Contents(i ObjId) []byte {
 	x := d.Objects[i]
 	b := d.buf
@@ -200,19 +204,19 @@ func (d *Dump) Ft(x ObjId) *FullType {
 // findObj returns the object id containing the address addr, or -1 if no object contains addr.
 func (d *Dump) findObj(addr uint64) ObjId {
 	if addr < d.HeapStart || addr >= d.HeapEnd { // quick exit.  Includes nil.
-		return ObjId(-1)
+		return ObjNil
 	}
 	// linear search among all the objects that map to the same bucketSize byte bucket.
 	for i := d.idx[(addr - d.HeapStart) / bucketSize]; i < len(d.Objects); i++ {
 		x := d.Objects[i]
 		if addr < x.Addr {
-			return ObjId(-1)
+			return ObjNil
 		}
 		if addr < x.Addr + x.Ft.Size {
 			return ObjId(i)
 		}
 	}
-	return ObjId(-1)
+	return ObjNil
 }
 
 func (d *Dump) Edges(i ObjId) []Edge {
@@ -224,7 +228,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 		case FieldKindPtr, FieldKindString, FieldKindSlice:
 			p := readPtr(d, b[f.Offset:])
 			y := d.findObj(p)
-			if y != ObjId(-1) {
+			if y != ObjNil {
 				e = append(e, Edge{y, f.Offset, p - d.Objects[y].Addr, f.Name})
 			}
 		case FieldKindEface:
@@ -237,7 +241,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 				if t.efaceptr {
 					p := readPtr(d, b[f.Offset+d.PtrSize:])
 					y := d.findObj(p)
-					if y != ObjId(-1) {
+					if y != ObjNil {
 						e = append(e, Edge{y, f.Offset+d.PtrSize, p - d.Objects[y].Addr, f.Name})
 					}
 				}
@@ -252,7 +256,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 				if ptr {
 					p := readPtr(d, b[f.Offset+d.PtrSize:])
 					y := d.findObj(p)
-					if y != ObjId(-1) {
+					if y != ObjNil {
 						e = append(e, Edge{y, f.Offset+d.PtrSize, p - d.Objects[y].Addr, f.Name})
 					}
 				}
@@ -1157,7 +1161,7 @@ type frameKey struct {
 func (d *Dump) appendEdge(edges []Edge, data []byte, off uint64, f Field) []Edge {
 	p := readPtr(d, data[off:])
 	q := d.findObj(p)
-	if q != ObjId(-1) {
+	if q != ObjNil {
 		edges = append(edges, Edge{q, off, p - d.Objects[q].Addr, f.Name})
 	}
 	return edges
@@ -1376,7 +1380,7 @@ func link(d *Dump) {
 			f.Goroutine = g
 		}
 		x := d.findObj(g.ctxtaddr)
-		if x != ObjId(-1) {
+		if x != ObjNil {
 			g.Ctxt = x
 		}
 	}
@@ -1389,7 +1393,7 @@ func link(d *Dump) {
 	// link other roots
 	for _, r := range d.Otherroots {
 		x := d.findObj(r.toaddr)
-		if x != ObjId(-1) {
+		if x != ObjNil {
 			r.E = Edge{x, 0, r.toaddr - d.Objects[x].Addr, ""}
 		}
 	}
@@ -1410,7 +1414,7 @@ func link(d *Dump) {
 	for _, f := range d.QFinal {
 		for _, addr := range []uint64{f.obj, f.fn, f.fint, f.ot} {
 			x := d.findObj(addr)
-			if x != ObjId(-1) {
+			if x != ObjNil {
 				f.Edges = append(f.Edges, Edge{x, 0, addr - d.Objects[x].Addr, ""})
 			}
 		}

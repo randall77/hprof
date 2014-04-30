@@ -893,7 +893,7 @@ var ref2 map[read.ObjId][]read.ObjId
 
 func getReferrers(x read.ObjId) []string {
 	var r []string
-	if y := ref1[x]; y != read.ObjId(-1) {
+	if y := ref1[x]; y != read.ObjNil {
 		for _, e := range d.Edges(y) {
 			if e.To == x {
 				r = append(r, edgeSource(y, e))
@@ -954,7 +954,7 @@ func prepare() {
 	// compute referrers
 	ref1 = make([]read.ObjId, len(d.Objects))
 	for i := range d.Objects {
-		ref1[i] = read.ObjId(-1)
+		ref1[i] = read.ObjNil
 	}
 	ref2 = map[read.ObjId][]read.ObjId{}
 	for i := range d.Objects {
