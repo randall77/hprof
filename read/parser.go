@@ -158,9 +158,8 @@ type Edge struct {
 	FromOffset uint64  // offset in source object where ptr was found
 	ToOffset   uint64  // offset in destination object where ptr lands
 
-	// name of field / offset within field of source object, if known
+	// name of field in the source object, if known
 	FieldName   string
-	FieldOffset uint64 // TODO: remove
 }
 
 // Object represents an object in the heap.
@@ -226,7 +225,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 			p := readPtr(d, b[f.Offset:])
 			y := d.findObj(p)
 			if y != ObjId(-1) {
-				e = append(e, Edge{y, f.Offset, p - d.Objects[y].Addr, f.Name, 0})
+				e = append(e, Edge{y, f.Offset, p - d.Objects[y].Addr, f.Name})
 			}
 		case FieldKindEface:
 			taddr := readPtr(d, b[f.Offset:])
@@ -239,7 +238,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 					p := readPtr(d, b[f.Offset+d.PtrSize:])
 					y := d.findObj(p)
 					if y != ObjId(-1) {
-						e = append(e, Edge{y, f.Offset+d.PtrSize, p - d.Objects[y].Addr, f.Name, 0})
+						e = append(e, Edge{y, f.Offset+d.PtrSize, p - d.Objects[y].Addr, f.Name})
 					}
 				}
 			}
@@ -254,7 +253,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 					p := readPtr(d, b[f.Offset+d.PtrSize:])
 					y := d.findObj(p)
 					if y != ObjId(-1) {
-						e = append(e, Edge{y, f.Offset+d.PtrSize, p - d.Objects[y].Addr, f.Name, 0})
+						e = append(e, Edge{y, f.Offset+d.PtrSize, p - d.Objects[y].Addr, f.Name})
 					}
 				}
 			}
@@ -909,7 +908,7 @@ func (t *dwarfArrayType) Fields() []Field {
 // Some type names in the dwarf info don't match the corresponding
 // type names in the binary.  We'll use the rewrites here to map
 // between the two.
-// TODO: just struct names for now.  Rename this?  Do this conversion in the dwarf dumper?
+// TODO: just map names for now.  Rename this?  Do this conversion in the dwarf dumper?
 type adjTypeName struct {
 	matcher   *regexp.Regexp
 	formatter string
@@ -1155,40 +1154,31 @@ type frameKey struct {
 // appendEdge might add an edge to edges.  Returns new edges.
 //   Requires data[off:] be a pointer
 //   Adds an edge if that pointer points to a valid object.
-func (d *Dump) appendEdge(edges []Edge, data []byte, off uint64, f Field, arrayidx int64) []Edge {
+func (d *Dump) appendEdge(edges []Edge, data []byte, off uint64, f Field) []Edge {
 	p := readPtr(d, data[off:])
 	q := d.findObj(p)
 	if q != ObjId(-1) {
-		var fieldoffset uint64 // TODO
-		fieldname := f.Name
-		if arrayidx >= 0 {
-			if fieldname != "" {
-				fieldname = fmt.Sprintf("%d.%s", arrayidx, fieldname)
-			} else {
-				fieldname = fmt.Sprintf("%d", arrayidx)
-			}
-		}
-		edges = append(edges, Edge{q, off, p - d.Objects[q].Addr, fieldname, fieldoffset})
+		edges = append(edges, Edge{q, off, p - d.Objects[q].Addr, f.Name})
 	}
 	return edges
 }
 
-func (d *Dump) appendFields(edges []Edge, data []byte, fields []Field, offset uint64, arrayidx int64) []Edge {
+func (d *Dump) appendFields(edges []Edge, data []byte, fields []Field) []Edge {
 	for _, f := range fields {
-		off := offset + f.Offset
+		off := f.Offset
 		if off >= uint64(len(data)) {
 			// TODO: what the heck is this?
 			continue
 		}
 		switch f.Kind {
 		case FieldKindPtr:
-			edges = d.appendEdge(edges, data, off, f, arrayidx)
+			edges = d.appendEdge(edges, data, off, f)
 		case FieldKindString:
-			edges = d.appendEdge(edges, data, off, f, arrayidx)
+			edges = d.appendEdge(edges, data, off, f)
 		case FieldKindSlice:
-			edges = d.appendEdge(edges, data, off, f, arrayidx)
+			edges = d.appendEdge(edges, data, off, f)
 		case FieldKindEface:
-			edges = d.appendEdge(edges, data, off, f, arrayidx)
+			edges = d.appendEdge(edges, data, off, f)
 			tp := readPtr(d, data[off:])
 			if tp != 0 {
 				t := d.TypeMap[tp]
@@ -1197,14 +1187,14 @@ func (d *Dump) appendFields(edges []Edge, data []byte, fields []Field, offset ui
 					continue
 				}
 				if t.efaceptr {
-					edges = d.appendEdge(edges, data, off+d.PtrSize, f, arrayidx)
+					edges = d.appendEdge(edges, data, off+d.PtrSize, f)
 				}
 			}
 		case FieldKindIface:
 			tp := readPtr(d, data[off:])
 			if tp != 0 {
 				if d.ItabMap[tp] {
-					edges = d.appendEdge(edges, data, off+d.PtrSize, f, arrayidx)
+					edges = d.appendEdge(edges, data, off+d.PtrSize, f)
 				}
 			}
 		}
@@ -1364,7 +1354,7 @@ func link(d *Dump) {
 
 	// link stack frames to objects
 	for _, f := range d.Frames {
-		f.Edges = d.appendFields(f.Edges, f.Data, f.Fields, 0, -1)
+		f.Edges = d.appendFields(f.Edges, f.Data, f.Fields)
 	}
 
 	// link up frames in sequence
@@ -1393,14 +1383,14 @@ func link(d *Dump) {
 
 	// link data roots
 	for _, x := range []*Data{d.Data, d.Bss} {
-		x.Edges = d.appendFields(x.Edges, x.Data, x.Fields, 0, -1)
+		x.Edges = d.appendFields(x.Edges, x.Data, x.Fields)
 	}
 
 	// link other roots
 	for _, r := range d.Otherroots {
 		x := d.findObj(r.toaddr)
 		if x != ObjId(-1) {
-			r.E = Edge{x, 0, r.toaddr - d.Objects[x].Addr, "", 0}
+			r.E = Edge{x, 0, r.toaddr - d.Objects[x].Addr, ""}
 		}
 	}
 
@@ -1421,7 +1411,7 @@ func link(d *Dump) {
 		for _, addr := range []uint64{f.obj, f.fn, f.fint, f.ot} {
 			x := d.findObj(addr)
 			if x != ObjId(-1) {
-				f.Edges = append(f.Edges, Edge{x, 0, addr - d.Objects[x].Addr, "", 0})
+				f.Edges = append(f.Edges, Edge{x, 0, addr - d.Objects[x].Addr, ""})
 			}
 		}
 	}

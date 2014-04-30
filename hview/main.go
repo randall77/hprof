@@ -912,25 +912,14 @@ func getReferrers(x read.ObjId) []string {
 			if e.To != x {
 				continue
 			}
-			v := e.FieldName
-			if e.FieldOffset != 0 {
-				v = fmt.Sprintf("%s+%d", v, e.FieldOffset)
-			}
-			v = "global " + v
-			r = append(r, v)
+			r = append(r, "global " + e.FieldName)
 		}
 	}
 	for _, f := range d.Frames {
 		for _, e := range f.Edges {
-			if e.To != x {
-				continue
+			if e.To == x {
+				r = append(r, fmt.Sprintf("<a href=frame?id=%x&depth=%d>%s</a>.%s", f.Addr, f.Depth, f.Name, e.FieldName))
 			}
-			v := e.FieldName
-			if e.FieldOffset != 0 {
-				v = fmt.Sprintf("%s+%d", v, e.FieldOffset)
-			}
-			v = fmt.Sprintf("<a href=frame?id=%x&depth=%d>%s</a>.%s", f.Addr, f.Depth, f.Name, v)
-			r = append(r, v)
 		}
 	}
 	for _, s := range d.Otherroots {
