@@ -18,47 +18,45 @@ func main() {
 
 	// eliminate unreachable objects
 	// TODO: have reader do this?
-	reachable := map[*read.Object]struct{}{}
-	var q []*read.Object
+	reachable := make([]bool, d.NumObjects())
+	var q []read.ObjId
 	for _, f := range d.Frames {
 		for _, e := range f.Edges {
-			if _, ok := reachable[e.To]; !ok {
-				reachable[e.To] = struct{}{}
+			if !reachable[e.To] {
+				reachable[e.To] = true
 				q = append(q, e.To)
 			}
 		}
 	}
 	for _, x := range []*read.Data{d.Data, d.Bss} {
 		for _, e := range x.Edges {
-			if e.To != nil {
-				if _, ok := reachable[e.To]; !ok {
-					reachable[e.To] = struct{}{}
-					q = append(q, e.To)
-				}
+			if !reachable[e.To] {
+				reachable[e.To] = true
+				q = append(q, e.To)
 			}
 		}
 	}
 	for _, r := range d.Otherroots {
-		if r.E.To != nil {
-			if _, ok := reachable[r.E.To]; !ok {
-				reachable[r.E.To] = struct{}{}
-				q = append(q, r.E.To)
+		for _, e := range r.Edges {
+			if !reachable[e.To] {
+				reachable[e.To] = true
+				q = append(q, e.To)
 			}
 		}
 	}
 	for _, f := range d.QFinal {
 		for _, e := range f.Edges {
-			if _, ok := reachable[e.To]; !ok {
-				reachable[e.To] = struct{}{}
+			if !reachable[e.To] {
+				reachable[e.To] = true
 				q = append(q, e.To)
 			}
 
 		}
 	}
 	for _, g := range d.Goroutines {
-		if g.Ctxt != nil {
-			if _, ok := reachable[g.Ctxt]; !ok {
-				reachable[g.Ctxt] = struct{}{}
+		if g.Ctxt != read.ObjNil {
+			if !reachable[g.Ctxt] {
+				reachable[g.Ctxt] = true
 				q = append(q, g.Ctxt)
 			}
 		}
@@ -66,9 +64,9 @@ func main() {
 	for len(q) > 0 {
 		x := q[0]
 		q = q[1:]
-		for _, e := range x.Edges {
-			if _, ok := reachable[e.To]; !ok {
-				reachable[e.To] = struct{}{}
+		for _, e := range d.Edges(x) {
+			if !reachable[e.To] {
+				reachable[e.To] = true
 				q = append(q, e.To)
 			}
 		}
@@ -77,98 +75,73 @@ func main() {
 	fmt.Printf("digraph {\n")
 
 	// print object graph
-	for _, x := range d.Objects {
-		if _, ok := reachable[x]; !ok {
-			fmt.Printf("  v%x [style=filled fillcolor=gray];\n", x.Addr)
+	for i := 0; i < d.NumObjects(); i++ {
+		x := read.ObjId(i)
+		if !reachable[x] {
+			fmt.Printf("  v%d [style=filled fillcolor=gray];\n", x)
 		}
-		if x.Type() != nil {
-			name := x.Type().Name
-			switch x.Kind() {
-			case read.TypeKindArray:
-				name = fmt.Sprintf("{%d}%s", x.Size()/x.Type().Size, name)
-			case read.TypeKindChan:
-				if x.Type().Size == 0 {
-					name = fmt.Sprintf("chan{?}%s", name)
-				} else {
-					name = fmt.Sprintf("chan{%d}%s", (x.Size()-d.HChanSize)/x.Type().Size, name)
-				}
-			}
-			// NOTE: sizes are max sizes given sizeclass - the actual size of a
-			// chan or array might be smaller.
-			fmt.Printf("  v%x [label=\"%s\\n%d\"];\n", x.Addr, name, x.Size())
-		} else {
-			fmt.Printf("  v%x [label=\"%d\"];\n", x.Addr, x.Size())
-		}
-		for _, e := range x.Edges {
+		fmt.Printf("  v%d [label=\"%s\\n%d\"];\n", x, d.Ft(x).Name, d.Size(x))
+		for _, e := range d.Edges(x) {
 			var taillabel, headlabel string
 			if e.FieldName != "" {
-				if e.FieldOffset == 0 {
-					taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", e.FieldName)
-				} else {
-					taillabel = fmt.Sprintf(" [taillabel=\"%s:%d\"]", e.FieldName, e.FieldOffset)
-				}
+				taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", e.FieldName)
 			} else if e.FromOffset != 0 {
 				taillabel = fmt.Sprintf(" [taillabel=\"%d\"]", e.FromOffset)
 			}
 			if e.ToOffset != 0 {
 				headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.ToOffset)
 			}
-			fmt.Printf("  v%x -> v%x%s%s;\n", x.Addr, e.To.Addr, taillabel, headlabel)
+			fmt.Printf("  v%d -> v%d%s%s;\n", x, e.To, taillabel, headlabel)
 		}
 	}
 
 	// goroutines and stacks
 	for _, t := range d.Goroutines {
 		fmt.Printf("  \"goroutines\" [shape=diamond];\n")
-		fmt.Printf("  \"goroutines\" -> v%x_0;\n", t.Bos.Addr)
+		fmt.Printf("  \"goroutines\" -> f%x_0;\n", t.Bos.Addr)
 	}
 
 	// stack frames
 	for _, f := range d.Frames {
-		fmt.Printf("  v%x_%d [label=\"%s\\n%d\" shape=rectangle];\n", f.Addr, f.Depth, f.Name, len(f.Data))
+		fmt.Printf("  f%x_%d [label=\"%s\\n%d\" shape=rectangle];\n", f.Addr, f.Depth, f.Name, len(f.Data))
 		if f.Parent != nil {
-			fmt.Printf("  v%x_%d -> v%x_%d;\n", f.Addr, f.Depth, f.Parent.Addr, f.Parent.Depth)
+			fmt.Printf("  f%x_%d -> f%x_%d;\n", f.Addr, f.Depth, f.Parent.Addr, f.Parent.Depth)
 		}
 		for _, e := range f.Edges {
-			if e.To != nil {
+			if e.To != read.ObjNil {
 				var taillabel, headlabel string
 				if e.FieldName != "" {
-					if e.FieldOffset == 0 {
-						taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", e.FieldName)
-					} else {
-						taillabel = fmt.Sprintf(" [taillabel=\"%s:%d\"]", e.FieldName, e.FieldOffset)
-					}
+					taillabel = fmt.Sprintf(" [taillabel=\"%s\"]", e.FieldName)
 				} else if e.FromOffset != 0 {
 					taillabel = fmt.Sprintf(" [taillabel=\"%d\"]", e.FromOffset)
 				}
 				if e.ToOffset != 0 {
 					headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.ToOffset)
 				}
-				fmt.Printf("  v%x_%d -> v%x%s%s;\n", f.Addr, f.Depth, e.To.Addr, taillabel, headlabel)
+				fmt.Printf("  f%x_%d -> v%d%s%s;\n", f.Addr, f.Depth, e.To, taillabel, headlabel)
 			}
 		}
 	}
 	for _, x := range []*read.Data{d.Data, d.Bss} {
 		for _, e := range x.Edges {
-			if e.To != nil {
+			if e.To != read.ObjNil {
 				var headlabel string
 				if e.ToOffset != 0 {
 					headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.ToOffset)
 				}
 				fmt.Printf("  \"%s\" [shape=diamond];\n", e.FieldName)
-				fmt.Printf("  \"%s\" -> v%x%s;\n", e.FieldName, e.To.Addr, headlabel)
+				fmt.Printf("  \"%s\" -> v%d%s;\n", e.FieldName, e.To, headlabel)
 			}
 		}
 	}
 	for _, r := range d.Otherroots {
-		e := r.E
-		if e.To != nil {
+		for _, e := range r.Edges {
 			var headlabel string
 			if e.ToOffset != 0 {
 				headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.ToOffset)
 			}
 			fmt.Printf("  \"%s\" [shape=diamond];\n", r.Description)
-			fmt.Printf("  \"%s\" -> v%x%s;\n", r.Description, e.To.Addr, headlabel)
+			fmt.Printf("  \"%s\" -> v%d%s;\n", r.Description, e.To, headlabel)
 		}
 	}
 	for _, f := range d.QFinal {
@@ -178,7 +151,7 @@ func main() {
 				headlabel = fmt.Sprintf(" [headlabel=\"%d\"]", e.ToOffset)
 			}
 			fmt.Printf("  \"queued finalizers\" [shape=diamond];\n")
-			fmt.Printf("  \"queued finalizers\" -> v%x%s;\n", e.To.Addr, headlabel)
+			fmt.Printf("  \"queued finalizers\" -> v%d%s;\n", e.To, headlabel)
 		}
 	}
 

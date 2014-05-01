@@ -544,7 +544,9 @@ border:1px solid grey;
 func othersHandler(w http.ResponseWriter, r *http.Request) {
 	var f []Field
 	for _, x := range d.Otherroots {
-		f = append(f, Field{x.Description, "unknown", edgeLink(x.E)})
+		for _, e := range x.Edges {
+			f = append(f, Field{x.Description, "unknown", edgeLink(e)})
+		}
 	}
 	if err := othersTemplate.Execute(w, f); err != nil {
 		log.Print(err)
@@ -902,10 +904,11 @@ func getReferrers(x read.ObjId) []string {
 		}
 	}
 	for _, s := range d.Otherroots {
-		if s.E.To != x {
-			continue
+		for _, e := range s.Edges {
+			if e.To == x {
+				r = append(r, s.Description)
+			}
 		}
-		r = append(r, s.Description)
 	}
 	return r
 }
@@ -975,7 +978,9 @@ func dom() {
 		}
 	}
 	for _, x := range d.Otherroots {
-		roots[x.E.To] = struct{}{}
+		for _, e := range x.Edges {
+			roots[e.To] = struct{}{}
+		}
 	}
 
 	// compute postorder traversal

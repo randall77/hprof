@@ -276,7 +276,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 
 type OtherRoot struct {
 	Description string
-	E           Edge
+	Edges       []Edge
 
 	toaddr uint64
 }
@@ -1349,20 +1349,6 @@ func link(d *Dump) {
 		frames[frameKey{x.Addr, x.Depth}] = x
 	}
 
-	// link objects to types
-	/*
-		for _, x := range d.objects {
-			if x.typaddr == 0 {
-				x.Typ = nil
-			} else {
-				x.Typ = d.types[x.typaddr]
-				if x.Typ == nil {
-					log.Fatal("type is missing")
-				}
-			}
-		}
-	*/
-
 	// link stack frames to objects
 	for _, f := range d.Frames {
 		f.Edges = d.appendFields(f.Edges, f.Data, f.Fields)
@@ -1401,7 +1387,7 @@ func link(d *Dump) {
 	for _, r := range d.Otherroots {
 		x := d.findObj(r.toaddr)
 		if x != ObjNil {
-			r.E = Edge{x, 0, r.toaddr - d.objects[x].Addr, ""}
+			r.Edges = append(r.Edges, Edge{x, 0, r.toaddr - d.objects[x].Addr, ""})
 		}
 	}
 
