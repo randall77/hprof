@@ -114,8 +114,8 @@ func main() {
 	for _, typ := range d.Types {
 		usedIds[typ.Addr] = struct{}{}
 	}
-	for _, obj := range d.Objects {
-		usedIds[obj.Addr] = struct{}{}
+	for i := 0; i < d.NumObjects(); i++ {
+		usedIds[d.Addr(read.ObjId(i))] = struct{}{}
 	}
 	stringCache = make(map[string]uint64, 0)
 	threadSerialNumbers = make(map[*read.GoRoutine]uint32, 0)
@@ -720,24 +720,25 @@ func addHeapDump() {
 	var data []byte
 
 	// output each object as an instance
-	for _, x := range d.Objects {
-		if x.Size() >= 8<<32 {
+	for i := 0; i < d.NumObjects(); i++ {
+		x := read.ObjId(i)
+		if d.Size(x) >= 8<<32 {
 			// file format can't record objects this big.  TODO: error/warning?  Truncate?
 			continue
 		}
 
 		// figure out what class to use for this object
 		var c uint64
-		if x.Type() == nil {
-			c = NoPtrClass(x.Size())
+		if d.Ft(x).Typ == nil {
+			c = NoPtrClass(d.Size(x))
 		} else {
-			switch x.Kind() {
+			switch d.Ft(x).Kind {
 			case read.TypeKindObject:
-				c = StdClass(x.Type(), x.Size())
+				c = StdClass(d.Ft(x).Typ, d.Size(x))
 			case read.TypeKindArray:
-				c = ArrayClass(x.Type(), x.Size())
+				c = ArrayClass(d.Ft(x).Typ, d.Size(x))
 			case read.TypeKindChan:
-				c = ChanClass(x.Type(), x.Size())
+				c = ChanClass(d.Ft(x).Typ, d.Size(x))
 			// TODO: TypeKindConservative
 			default:
 				log.Fatal("unhandled kind")
@@ -748,8 +749,8 @@ func addHeapDump() {
 		data = append(data[:0], d.Contents(x)...)
 
 		// Any pointers to objects get adjusted to point to the object head.
-		for _, e := range x.Edges {
-			writePtr(data[e.FromOffset:], e.To.Addr)
+		for _, e := range d.Edges(x) {
+			writePtr(data[e.FromOffset:], d.Addr(e.To))
 		}
 
 		// convert to big-endian representation
@@ -796,22 +797,22 @@ func addHeapDump() {
 		// dump object header
 		if c == bigNoPtrArray {
 			dump = append(dump, HPROF_GC_PRIM_ARRAY_DUMP)
-			dump = appendId(dump, x.Addr)
+			dump = appendId(dump, d.Addr(x))
 			dump = append32(dump, stack_trace_serial_number)
-			dump = append32(dump, uint32(x.Size()/8))
+			dump = append32(dump, uint32(d.Size(x)/8))
 			dump = append(dump, T_LONG)
 		} else if c == bigPtrArray {
 			dump = append(dump, HPROF_GC_OBJ_ARRAY_DUMP)
-			dump = appendId(dump, x.Addr)
+			dump = appendId(dump, d.Addr(x))
 			dump = append32(dump, stack_trace_serial_number)
-			dump = append32(dump, uint32(x.Size()/8))
+			dump = append32(dump, uint32(d.Size(x)/8))
 			dump = appendId(dump, java_lang_objectarray)
 		} else {
 			dump = append(dump, HPROF_GC_INSTANCE_DUMP)
-			dump = appendId(dump, x.Addr)
+			dump = appendId(dump, d.Addr(x))
 			dump = append32(dump, stack_trace_serial_number)
 			dump = appendId(dump, c)
-			dump = append32(dump, uint32(x.Size()))
+			dump = append32(dump, uint32(d.Size(x)))
 		}
 		// dump object data
 		dump = append(dump, data...)
@@ -854,7 +855,7 @@ func addHeapDump() {
 
 				// finally, make root come from this thread
 				dump = append(dump, HPROF_GC_ROOT_JAVA_FRAME)
-				dump = appendId(dump, e.To.Addr)
+				dump = appendId(dump, d.Addr(e.To))
 				dump = append32(dump, tid)
 				dump = append32(dump, 0) // depth
 			}
@@ -864,18 +865,17 @@ func addHeapDump() {
 	for _, x := range []*read.Data{d.Data, d.Bss} {
 		// adjust edges to point to object beginnings
 		for _, e := range x.Edges {
-			writePtr(x.Data[e.FromOffset:], e.To.Addr)
+			writePtr(x.Data[e.FromOffset:], d.Addr(e.To))
 		}
 		for _, f := range x.Fields {
 			addGlobal(f.Name, f.Kind, x.Data[f.Offset:])
 		}
 	}
 	for _, t := range d.Otherroots {
-		if t.E.To == nil {
-			continue
+		for _, e := range t.Edges {
+			dump = append(dump, HPROF_GC_ROOT_UNKNOWN)
+			dump = appendId(dump, d.Addr(e.To))
 		}
-		dump = append(dump, HPROF_GC_ROOT_UNKNOWN)
-		dump = appendId(dump, t.E.To.Addr)
 	}
 
 	addTag(HPROF_HEAP_DUMP, dump)
