@@ -218,13 +218,12 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 }
 
 type objInfo struct {
-	Addr         uint64
-	Typ          string
-	Size         uint64
-	Fields       []Field
-	Referrers    []string
-	ReachableMem uint64
-	Roots        []string
+	Addr      uint64
+	Typ       string
+	Size      uint64
+	Fields    []Field
+	Referrers []string
+	Dominates uint64
 }
 
 var objTemplate = template.Must(template.New("obj").Parse(`
@@ -265,8 +264,8 @@ border:1px solid grey;
 {{.}}
 <br>
 {{end}}
-<h3>Reachable Memory</h3>
-{{.ReachableMem}} bytes
+<h3>Heap dominated by this object</h3>
+{{.Dominates}} bytes
 </tt>
 </body>
 </html>
@@ -291,33 +290,13 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	x := read.ObjId(id)
 
-	// compute amount of reachable memory.
-	// TODO: do as a preprocess?
-	reachableMem := uint64(0)
-	h := map[read.ObjId]struct{}{}
-	var queue []read.ObjId
-	h[x] = struct{}{}
-	queue = append(queue, x)
-	for len(queue) > 0 {
-		y := queue[0]
-		queue = queue[1:]
-		reachableMem += d.Size(y)
-		for _, e := range d.Edges(y) {
-			if _, ok := h[e.To]; !ok {
-				h[e.To] = struct{}{}
-				queue = append(queue, e.To)
-			}
-		}
-	}
-
 	info := objInfo{
 		d.Addr(x),
 		typeLink(d.Ft(x)),
 		d.Size(x),
 		getFields(d.Contents(x), d.Ft(x).Fields, d.Edges(x)),
 		getReferrers(x),
-		reachableMem,
-		nil,
+		domsize[x],
 	}
 	if err := objTemplate.Execute(w, info); err != nil {
 		log.Print(err)
@@ -982,11 +961,32 @@ func prepare() {
 		s += d.Size(x.E.To)
 	}
 	fmt.Println("type data", s)
+
 	dom()
 }
 
+// map from object ID to the size of the heap that is dominated by this node.
+var domsize []uint64
+
 func dom() {
 	n := len(d.Objects)
+
+	// make list of roots
+	// TODO: have loader compute this?
+	roots := map[read.ObjId]struct{}{}
+	for _, s := range []*read.Data{d.Data, d.Bss} {
+		for _, e := range s.Edges {
+			roots[e.To] = struct{}{}
+		}
+	}
+	for _, f := range d.Frames {
+		for _, e := range f.Edges {
+			roots[e.To] = struct{}{}
+		}
+	}
+	for _, x := range d.Otherroots {
+		roots[x.E.To] = struct{}{}
+	}
 
 	// compute postorder traversal
 	// object states:
@@ -994,11 +994,11 @@ func dom() {
 	// 1 - seen, added to queue, not yet expanded children
 	// 2 - seen, already expanded children
 	// 3 - added to postorder
-	post := make([]read.ObjId, 0, n)
+	postorder := make([]read.ObjId, 0, n)
+	postnum := make([]int, n+1)
 	state := make([]byte, n)
-	var q []read.ObjId // stack of work to do, holds states 1 and 2 objects
-	for i := range d.Objects {
-		x := read.ObjId(i)
+	var q []read.ObjId // stack of work to do, holds state 1 and 2 objects
+	for x := range roots {
 		if state[x] != 0 {
 			if state[x] != 3 {
 				log.Fatal("bad state found")
@@ -1013,10 +1013,13 @@ func dom() {
 			if state[y] == 2 {
 				state[y] = 3
 				q = q[:len(q)-1]
-				post = append(post, y)
+				postnum[y] = len(postorder)
+				postorder = append(postorder, y)
 			} else {
+				if state[y] != 1 {
+					log.Fatal("bad state")
+				}
 				state[y] = 2
-				// leave y in q
 				for _, e := range d.Edges(y) {
 					z := e.To
 					if state[z] == 0 {
@@ -1027,37 +1030,63 @@ func dom() {
 			}
 		}
 	}
-	fmt.Println(post[:100])
+	postnum[n] = n // virtual start node
 
-	// compute dominance
-	dom := make([]read.ObjId, n)
+	// compute immediate dominators
+	// http://www.hipersoft.rice.edu/grads/publications/dom14.pdf
+	idom := make([]read.ObjId, n+1)
 	for i := 0; i < n; i++ {
-		dom[i] = read.ObjNil
+		idom[i] = read.ObjNil
 	}
-	for _, s := range []*read.Data{d.Data, d.Bss} {
-		for _, e := range s.Edges {
-			dom[e.To] = e.To
-		}
+	idom[n] = read.ObjId(n)
+	for r := range roots {
+		idom[r] = read.ObjId(n)
 	}
-	var p []read.ObjId
-	done := false
-	for !done {
-		done = true
-		for i := n - 1; i >= 0; i-- {
-			x := post[i]
-			// accumulate reverse edges
-			p = p[:0]
+	var redges []read.ObjId
+	change := true
+	for change {
+		change = false
+		for i := len(postorder) - 1; i >= 0; i-- {
+			x := postorder[i]
+			// get list of incoming edges
+			redges = redges[:0]
 			if ref1[x] != read.ObjNil {
-				p = append(p, ref1[x])
-				p = append(p, ref2[x]...)
+				redges = append(redges, ref1[x])
+				redges = append(redges, ref2[x]...)
 			}
-
-			for _, y := range p {
-				_ = y
+			a := read.ObjNil
+			for _, b := range redges {
+				if idom[b] == read.ObjNil {
+					continue
+				}
+				if a == read.ObjNil {
+					a = b
+					continue
+				}
+				for a != b {
+					if postnum[a] < postnum[b] {
+						a = idom[a]
+					} else {
+						b = idom[b]
+					}
+				}
+			}
+			if _, ok := roots[x]; ok {
+				a = read.ObjId(n)
+			}
+			if a != idom[x] {
+				idom[x] = a
+				change = true
 			}
 		}
 	}
-	_ = dom
+
+	domsize = make([]uint64, n+1)
+	for _, x := range postorder {
+		domsize[x] += d.Size(x)
+		domsize[idom[x]] += domsize[x]
+	}
+	// Note: unreachable objects will have domsize of 0.
 }
 
 func readPtr(b []byte) uint64 {
