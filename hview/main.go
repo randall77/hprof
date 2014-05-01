@@ -284,7 +284,7 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if int(id) >= len(d.Objects) {
+	if int(id) >= d.NumObjects() {
 		http.Error(w, "object not found", 405)
 		return
 	}
@@ -921,7 +921,7 @@ var byType []bucket
 func prepare() {
 	// group objects by type
 	byType = make([]bucket, len(d.FTList))
-	for i := range d.Objects {
+	for i := 0; i < d.NumObjects(); i++ {
 		x := read.ObjId(i)
 		tid := d.Ft(x).Id
 		b := byType[tid]
@@ -931,12 +931,12 @@ func prepare() {
 	}
 
 	// compute referrers
-	ref1 = make([]read.ObjId, len(d.Objects))
-	for i := range d.Objects {
+	ref1 = make([]read.ObjId, d.NumObjects())
+	for i := 0; i < d.NumObjects(); i++ {
 		ref1[i] = read.ObjNil
 	}
 	ref2 = map[read.ObjId][]read.ObjId{}
-	for i := range d.Objects {
+	for i := 0; i < d.NumObjects(); i++ {
 		x := read.ObjId(i)
 		for _, e := range d.Edges(x) {
 			r := ref1[e.To]
@@ -959,7 +959,7 @@ var domsize []uint64
 
 func dom() {
 	fmt.Println("Computing dominators...")
-	n := len(d.Objects)
+	n := d.NumObjects()
 
 	// make list of roots
 	// TODO: have loader compute this?

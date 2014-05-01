@@ -95,7 +95,7 @@ type Dump struct {
 	Experiment string
 	Ncpu       uint64
 	Types      []*Type
-	Objects    []*Object
+	objects    []object
 	Frames     []*StackFrame
 	Goroutines []*GoRoutine
 	Otherroots []*OtherRoot
@@ -162,9 +162,9 @@ type Edge struct {
 	FieldName string
 }
 
-// Object represents an object in the heap.
+// object represents an object in the heap.
 // There will be a lot of these.  They need to be small.
-type Object struct {
+type object struct {
 	Ft     *FullType
 	offset int64 // position of object contents in dump file
 	Addr   uint64
@@ -176,8 +176,11 @@ const (
 	ObjNil ObjId = -1
 )
 
+func (d *Dump) NumObjects() int {
+	return len(d.objects)
+}
 func (d *Dump) Contents(i ObjId) []byte {
-	x := d.Objects[i]
+	x := d.objects[i]
 	b := d.buf
 	if uint64(cap(b)) < x.Ft.Size {
 		b = make([]byte, x.Ft.Size)
@@ -192,13 +195,13 @@ func (d *Dump) Contents(i ObjId) []byte {
 	return b
 }
 func (d *Dump) Addr(x ObjId) uint64 {
-	return d.Objects[x].Addr
+	return d.objects[x].Addr
 }
 func (d *Dump) Size(x ObjId) uint64 {
-	return d.Objects[x].Ft.Size
+	return d.objects[x].Ft.Size
 }
 func (d *Dump) Ft(x ObjId) *FullType {
-	return d.Objects[x].Ft
+	return d.objects[x].Ft
 }
 
 // findObj returns the object id containing the address addr, or -1 if no object contains addr.
@@ -207,8 +210,8 @@ func (d *Dump) findObj(addr uint64) ObjId {
 		return ObjNil
 	}
 	// linear search among all the objects that map to the same bucketSize byte bucket.
-	for i := d.idx[(addr-d.HeapStart)/bucketSize]; i < len(d.Objects); i++ {
-		x := d.Objects[i]
+	for i := d.idx[(addr-d.HeapStart)/bucketSize]; i < len(d.objects); i++ {
+		x := d.objects[i]
 		if addr < x.Addr {
 			return ObjNil
 		}
@@ -220,7 +223,7 @@ func (d *Dump) findObj(addr uint64) ObjId {
 }
 
 func (d *Dump) Edges(i ObjId) []Edge {
-	x := d.Objects[i]
+	x := d.objects[i]
 	e := d.edges[:0]
 	b := d.Contents(i)
 	for _, f := range x.Ft.Fields {
@@ -229,7 +232,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 			p := readPtr(d, b[f.Offset:])
 			y := d.findObj(p)
 			if y != ObjNil {
-				e = append(e, Edge{y, f.Offset, p - d.Objects[y].Addr, f.Name})
+				e = append(e, Edge{y, f.Offset, p - d.objects[y].Addr, f.Name})
 			}
 		case FieldKindEface:
 			taddr := readPtr(d, b[f.Offset:])
@@ -242,7 +245,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 					p := readPtr(d, b[f.Offset+d.PtrSize:])
 					y := d.findObj(p)
 					if y != ObjNil {
-						e = append(e, Edge{y, f.Offset + d.PtrSize, p - d.Objects[y].Addr, f.Name})
+						e = append(e, Edge{y, f.Offset + d.PtrSize, p - d.objects[y].Addr, f.Name})
 					}
 				}
 			}
@@ -257,7 +260,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 					p := readPtr(d, b[f.Offset+d.PtrSize:])
 					y := d.findObj(p)
 					if y != ObjNil {
-						e = append(e, Edge{y, f.Offset + d.PtrSize, p - d.Objects[y].Addr, f.Name})
+						e = append(e, Edge{y, f.Offset + d.PtrSize, p - d.objects[y].Addr, f.Name})
 					}
 				}
 			}
@@ -518,7 +521,7 @@ func rawRead(filename string) *Dump {
 		kind := readUint64(r)
 		switch kind {
 		case tagObject:
-			obj := &Object{}
+			obj := object{}
 			obj.Addr = readUint64(r)
 			typaddr := readUint64(r)
 			kind := TypeKind(readUint64(r))
@@ -532,7 +535,7 @@ func rawRead(filename string) *Dump {
 			obj.Ft = ft
 			obj.offset = r.Count()
 			r.Skip(int64(ft.Size))
-			d.Objects = append(d.Objects, obj)
+			d.objects = append(d.objects, obj)
 		case tagEOF:
 			return &d
 		case tagOtherRoot:
@@ -685,6 +688,8 @@ func rawRead(filename string) *Dump {
 			log.Fatal("unknown record kind ", kind)
 		}
 	}
+	// TODO: any easy way to truncate the objects array?  We could
+	// reclaim the fraction that append() added but we didn't need.
 }
 
 func getDwarf(execname string) *dwarf.Data {
@@ -1162,7 +1167,7 @@ func (d *Dump) appendEdge(edges []Edge, data []byte, off uint64, f Field) []Edge
 	p := readPtr(d, data[off:])
 	q := d.findObj(p)
 	if q != ObjNil {
-		edges = append(edges, Edge{q, off, p - d.Objects[q].Addr, f.Name})
+		edges = append(edges, Edge{q, off, p - d.objects[q].Addr, f.Name})
 	}
 	return edges
 }
@@ -1324,15 +1329,15 @@ func nameWithDwarf(d *Dump, execname string) {
 
 func link(d *Dump) {
 	// sort objects in increasing address order
-	sort.Sort(byAddr(d.Objects))
+	sort.Sort(byAddr(d.objects))
 
 	// initialize index array
 	idx := make([]int, (d.HeapEnd-d.HeapStart)/bucketSize)
 	for i := 0; i < len(idx); i++ {
-		idx[i] = len(d.Objects)
+		idx[i] = len(d.objects)
 	}
-	for i := len(d.Objects) - 1; i >= 0; i-- {
-		idx[(d.Objects[i].Addr-d.HeapStart)/bucketSize] = i
+	for i := len(d.objects) - 1; i >= 0; i-- {
+		idx[(d.objects[i].Addr-d.HeapStart)/bucketSize] = i
 	}
 	d.idx = idx
 
@@ -1344,7 +1349,7 @@ func link(d *Dump) {
 
 	// link objects to types
 	/*
-		for _, x := range d.Objects {
+		for _, x := range d.objects {
 			if x.typaddr == 0 {
 				x.Typ = nil
 			} else {
@@ -1394,7 +1399,7 @@ func link(d *Dump) {
 	for _, r := range d.Otherroots {
 		x := d.findObj(r.toaddr)
 		if x != ObjNil {
-			r.E = Edge{x, 0, r.toaddr - d.Objects[x].Addr, ""}
+			r.E = Edge{x, 0, r.toaddr - d.objects[x].Addr, ""}
 		}
 	}
 
@@ -1415,7 +1420,7 @@ func link(d *Dump) {
 		for _, addr := range []uint64{f.obj, f.fn, f.fint, f.ot} {
 			x := d.findObj(addr)
 			if x != ObjNil {
-				f.Edges = append(f.Edges, Edge{x, 0, addr - d.Objects[x].Addr, ""})
+				f.Edges = append(f.Edges, Edge{x, 0, addr - d.objects[x].Addr, ""})
 			}
 		}
 	}
@@ -1535,7 +1540,7 @@ func nameFullTypes(d *Dump) {
 	}
 }
 
-type byAddr []*Object
+type byAddr []object
 
 func (a byAddr) Len() int           { return len(a) }
 func (a byAddr) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
