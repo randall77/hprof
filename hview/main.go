@@ -863,32 +863,25 @@ func main() {
 }
 
 // Map from object ID to list of objects that refer to that object.
-// It is split in two parts for efficiency.  The first inbound into x
-// is stored in ref1[x].  Any additional references are stored
-// in ref2[x].  Since most objects have only one incoming reference,
+// It is split in two parts for efficiency.  If an object x has <= 1
+// inbound edge, we store it in ref1[x].  Otherwise, it is stored in ref2[x].
+// Since most objects have only one incoming reference,
 // ref2 ends up small.
 var ref1 []read.ObjId
 var ref2 map[read.ObjId][]read.ObjId
 
 func getReferrers(x read.ObjId) []string {
 	var r []string
-	// m is for deduping referrers.  We should probably do this when building ref1/ref2.
-	m := map[read.ObjId]struct{}{}
 	if y := ref1[x]; y != read.ObjNil {
 		for _, e := range d.Edges(y) {
 			if e.To == x {
 				r = append(r, edgeSource(y, e))
-				m[y] = struct{}{}
 			}
 		}
 		for _, y := range ref2[x] {
-			if _, ok := m[y]; ok {
-				continue
-			}
 			for _, e := range d.Edges(y) {
 				if e.To == x {
 					r = append(r, edgeSource(y, e))
-					m[y] = struct{}{}
 				}
 			}
 		}
@@ -946,15 +939,33 @@ func prepare() {
 	for i := range d.Objects {
 		x := read.ObjId(i)
 		for _, e := range d.Edges(x) {
-			if ref1[e.To] < 0 {
+			if ref1[e.To] == read.ObjNil {
 				ref1[e.To] = x
 			} else {
 				ref2[e.To] = append(ref2[e.To], x)
 			}
 		}
 	}
+	// remove duplicates
+	for x, r := range ref2 {
+		sort.Sort(byObjId(r))
+		i := 0
+		for _, y := range r {
+			if y != ref1[x] && (i == 0 || y != r[i-1]) {
+				r[i] = y
+				i++
+			}
+		}
+		if i != len(r) {
+			if i == 0 {
+				delete(ref2, x)
+			} else {
+				ref2[x] = r[:i]
+			}
+		}
+	}
 	fmt.Println("objects", len(d.Objects))
-	fmt.Println("multirefer", len(ref2))
+	fmt.Println("objects with >1 referrer", len(ref2))
 
 	s := uint64(0)
 	for _, x := range d.Otherroots {
@@ -965,7 +976,13 @@ func prepare() {
 	dom()
 }
 
-// map from object ID to the size of the heap that is dominated by this node.
+type byObjId []read.ObjId
+
+func (a byObjId) Len() int           { return len(a) }
+func (a byObjId) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a byObjId) Less(i, j int) bool { return a[i] < a[j] }
+
+// map from object ID to the size of the heap that is dominated by that object.
 var domsize []uint64
 
 func dom() {
