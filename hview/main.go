@@ -939,53 +939,26 @@ func prepare() {
 	for i := range d.Objects {
 		x := read.ObjId(i)
 		for _, e := range d.Edges(x) {
-			if ref1[e.To] == read.ObjNil {
+			r := ref1[e.To]
+			if r == read.ObjNil {
 				ref1[e.To] = x
-			} else {
-				ref2[e.To] = append(ref2[e.To], x)
+			} else if x != r {
+				s := ref2[e.To]
+				if len(s) == 0 || x != s[len(s)-1] {
+					ref2[e.To] = append(s, x)
+				}
 			}
 		}
 	}
-	// remove duplicates
-	for x, r := range ref2 {
-		sort.Sort(byObjId(r))
-		i := 0
-		for _, y := range r {
-			if y != ref1[x] && (i == 0 || y != r[i-1]) {
-				r[i] = y
-				i++
-			}
-		}
-		if i != len(r) {
-			if i == 0 {
-				delete(ref2, x)
-			} else {
-				ref2[x] = r[:i]
-			}
-		}
-	}
-	fmt.Println("objects", len(d.Objects))
-	fmt.Println("objects with >1 referrer", len(ref2))
-
-	s := uint64(0)
-	for _, x := range d.Otherroots {
-		s += d.Size(x.E.To)
-	}
-	fmt.Println("type data", s)
 
 	dom()
 }
-
-type byObjId []read.ObjId
-
-func (a byObjId) Len() int           { return len(a) }
-func (a byObjId) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a byObjId) Less(i, j int) bool { return a[i] < a[j] }
 
 // map from object ID to the size of the heap that is dominated by that object.
 var domsize []uint64
 
 func dom() {
+	fmt.Println("Computing dominators...")
 	n := len(d.Objects)
 
 	// make list of roots
