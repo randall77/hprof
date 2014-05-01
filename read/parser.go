@@ -176,6 +176,8 @@ const (
 	ObjNil ObjId = -1
 )
 
+// NumObjects returns the number of objects in the heap.  Valid
+// ObjIds for other calls are from 0 to NumObjects()-1.
 func (d *Dump) NumObjects() int {
 	return len(d.objects)
 }
