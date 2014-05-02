@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"github.com/randall77/hprof/read"
@@ -18,6 +17,7 @@ import (
 
 const (
 	defaultAddr = ":8080" // default webserver address
+	maxFields = 4096
 )
 
 var (
@@ -95,6 +95,11 @@ func rawBytes(b []byte) string {
 func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 	var r []Field
 	off := uint64(0)
+	if len(fields) > maxFields {
+		// Don't generate humungous html.
+		// TODO: larger limit for globals?
+		fields = fields[:maxFields]
+	}
 	for _, f := range fields {
 		if f.Offset < off {
 			log.Fatal("out of order fields")
@@ -123,27 +128,27 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			typ = "int8"
 			off++
 		case read.FieldKindUInt16:
-			value = fmt.Sprintf("%d", read16(b[off:]))
+			value = fmt.Sprintf("%d", d.Order.Uint16(b[off:]))
 			typ = "uint16"
 			off += 2
 		case read.FieldKindSInt16:
-			value = fmt.Sprintf("%d", int16(read16(b[off:])))
+			value = fmt.Sprintf("%d", int16(d.Order.Uint16(b[off:])))
 			typ = "int16"
 			off += 2
 		case read.FieldKindUInt32:
-			value = fmt.Sprintf("%d", read32(b[off:]))
+			value = fmt.Sprintf("%d", d.Order.Uint32(b[off:]))
 			typ = "uint32"
 			off += 4
 		case read.FieldKindSInt32:
-			value = fmt.Sprintf("%d", int32(read32(b[off:])))
+			value = fmt.Sprintf("%d", int32(d.Order.Uint32(b[off:])))
 			typ = "int32"
 			off += 4
 		case read.FieldKindUInt64:
-			value = fmt.Sprintf("%d", read64(b[off:]))
+			value = fmt.Sprintf("%d", d.Order.Uint64(b[off:]))
 			typ = "uint64"
 			off += 8
 		case read.FieldKindSInt64:
-			value = fmt.Sprintf("%d", int64(read64(b[off:])))
+			value = fmt.Sprintf("%d", int64(d.Order.Uint64(b[off:])))
 			typ = "int64"
 			off += 8
 		case read.FieldKindBytes8:
@@ -212,7 +217,11 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 		r = append(r, Field{f.Name, typ, value})
 	}
 	if uint64(len(b)) > off {
-		r = append(r, Field{fmt.Sprintf("<font color=LightGray>sizeclass pad %d</font>", uint64(len(b))-off), "", ""})
+		if len(fields) == maxFields {
+			r = append(r, Field{fmt.Sprintf("<font color=LightGray>elided for display: %d bytes</font>", uint64(len(b))-off), "", ""})
+		} else {
+			r = append(r, Field{fmt.Sprintf("<font color=LightGray>sizeclass pad %d</font>", uint64(len(b))-off), "", ""})
+		}
 	}
 	return r
 }
@@ -1087,46 +1096,11 @@ func dom() {
 func readPtr(b []byte) uint64 {
 	switch d.PtrSize {
 	case 4:
-		return read32(b)
+		return uint64(d.Order.Uint32(b))
 	case 8:
-		return read64(b)
+		return d.Order.Uint64(b)
 	default:
 		log.Fatal("unsupported PtrSize=%d", d.PtrSize)
-		return 0
-	}
-}
-
-func read64(b []byte) uint64 {
-	switch {
-	case d.Order == binary.LittleEndian:
-		return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24 + uint64(b[4])<<32 + uint64(b[5])<<40 + uint64(b[6])<<48 + uint64(b[7])<<56
-	case d.Order == binary.BigEndian:
-		return uint64(b[7]) + uint64(b[6])<<8 + uint64(b[5])<<16 + uint64(b[4])<<24 + uint64(b[3])<<32 + uint64(b[2])<<40 + uint64(b[1])<<48 + uint64(b[0])<<56
-	default:
-		log.Fatal("unsupported order=%v", d.Order)
-		return 0
-	}
-}
-
-func read32(b []byte) uint64 {
-	switch {
-	case d.Order == binary.LittleEndian:
-		return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24
-	case d.Order == binary.BigEndian:
-		return uint64(b[3]) + uint64(b[2])<<8 + uint64(b[1])<<16 + uint64(b[0])<<24
-	default:
-		log.Fatal("unsupported order=%v", d.Order)
-		return 0
-	}
-}
-func read16(b []byte) uint64 {
-	switch {
-	case d.Order == binary.LittleEndian:
-		return uint64(b[0]) + uint64(b[1])<<8
-	case d.Order == binary.BigEndian:
-		return uint64(b[1]) + uint64(b[0])<<8
-	default:
-		log.Fatal("unsupported order=%v", d.Order)
 		return 0
 	}
 }

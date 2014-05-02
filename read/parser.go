@@ -66,6 +66,7 @@ const (
 	tagBss        = 13
 	tagDefer      = 14
 	tagPanic      = 15
+	tagMemProf    = 16
 
 	// DWARF constants
 	dw_op_call_frame_cfa = 156
@@ -107,6 +108,7 @@ type Dump struct {
 	Bss        *Data
 	Defers     []*Defer
 	Panics     []*Panic
+	MemProf    []*MemProfEntry
 
 	// handle to dump file
 	r io.ReaderAt
@@ -317,6 +319,18 @@ type Panic struct {
 	data uint64
 	defr uint64
 	link uint64
+}
+
+type MemProfFrame struct {
+	Func string
+	File string
+	Line uint64
+}
+type MemProfEntry struct {
+	size uint64
+	stack []MemProfFrame
+	allocs uint64
+	frees uint64
 }
 
 type Data struct {
@@ -686,6 +700,20 @@ func rawRead(filename string) *Dump {
 			t.defr = readUint64(r)
 			t.link = readUint64(r)
 			d.Panics = append(d.Panics, t)
+		case tagMemProf:
+			t := &MemProfEntry{}
+			t.size = readUint64(r)
+			nstk := readUint64(r)
+			for i := uint64(0); i < nstk; i++ {
+				fn := readString(r)
+				file := readString(r)
+				line := readUint64(r)
+				// TODO: intern fn, file.  They will repeat a lot.
+				t.stack = append(t.stack, MemProfFrame{fn, file, line})
+			}
+			t.allocs = readUint64(r)
+			t.frees = readUint64(r)
+			d.MemProf = append(d.MemProf, t)
 		default:
 			log.Fatal("unknown record kind ", kind)
 		}
@@ -1547,17 +1575,13 @@ func Read(dumpname, execname string) *Dump {
 }
 
 func readPtr(d *Dump, b []byte) uint64 {
-	switch {
-	case d.Order == binary.LittleEndian && d.PtrSize == 4:
-		return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24
-	case d.Order == binary.BigEndian && d.PtrSize == 4:
-		return uint64(b[3]) + uint64(b[2])<<8 + uint64(b[1])<<16 + uint64(b[0])<<24
-	case d.Order == binary.LittleEndian && d.PtrSize == 8:
-		return uint64(b[0]) + uint64(b[1])<<8 + uint64(b[2])<<16 + uint64(b[3])<<24 + uint64(b[4])<<32 + uint64(b[5])<<40 + uint64(b[6])<<48 + uint64(b[7])<<56
-	case d.Order == binary.BigEndian && d.PtrSize == 8:
-		return uint64(b[7]) + uint64(b[6])<<8 + uint64(b[5])<<16 + uint64(b[4])<<24 + uint64(b[3])<<32 + uint64(b[2])<<40 + uint64(b[1])<<48 + uint64(b[0])<<56
+	switch d.PtrSize {
+	case 4:
+		return uint64(d.Order.Uint32(b))
+	case 8:
+		return d.Order.Uint64(b)
 	default:
-		log.Fatal("unsupported order=%v PtrSize=%d", d.Order, d.PtrSize)
+		log.Fatal("unsupported PtrSize=%d", d.PtrSize)
 		return 0
 	}
 }
