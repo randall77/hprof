@@ -218,7 +218,7 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 	}
 	if uint64(len(b)) > off {
 		if len(fields) == maxFields {
-			r = append(r, Field{fmt.Sprintf("<font color=LightGray>elided for display: %d bytes</font>", uint64(len(b))-off), "", ""})
+			r = append(r, Field{fmt.Sprintf("<font color=Red>elided for display: %d bytes</font>", uint64(len(b))-off), "", ""})
 		} else {
 			r = append(r, Field{fmt.Sprintf("<font color=LightGray>sizeclass pad %d</font>", uint64(len(b))-off), "", ""})
 		}
@@ -299,12 +299,19 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	x := read.ObjId(id)
 
+	ref := getReferrers(x)
+	if len(ref) > maxFields {
+		msg := fmt.Sprintf("<font color=Red>elided for display: %d referrers</font>", len(ref) - (maxFields - 1))
+		ref = ref[:maxFields-1]
+		ref = append(ref, msg)
+	}
+
 	info := objInfo{
 		d.Addr(x),
 		typeLink(d.Ft(x)),
 		d.Size(x),
 		getFields(d.Contents(x), d.Ft(x).Fields, d.Edges(x)),
-		getReferrers(x),
+		ref,
 		domsize[x],
 	}
 	if err := objTemplate.Execute(w, info); err != nil {

@@ -80,10 +80,10 @@ const (
 	dw_ate_unsigned      = 7 // uint8/uint16/uint32/uint64/uint/uintptr
 
 	// Size of buckets for findObj.  Bigger buckets use less memory
-	// but make findObj take longer.  256 byte buckets use about 3%
+	// but make findObj take longer.  512 byte buckets use about 1.5%
 	// of the total heap size and require us to look at at most
-	// 32 objects.
-	bucketSize = 256
+	// 64 objects.
+	bucketSize = 512
 )
 
 type Dump struct {
@@ -127,11 +127,12 @@ type Dump struct {
 	// with that itab contains a pointer.
 	ItabMap map[uint64]bool
 
-	// array for fast lookup of objects
-	// maps (addr - HeapStart) / bucketSize to the first object
-	// that starts in those bucketSize bytes.
-	// with 8 byte ints this will consume ~3% of the dump's heap size
-	idx []int
+	// Data structure for fast lookup of objects.  Divides the heap
+	// into chunks of bucketSize bytes.  For each bucket, we keep
+	// track of the lowest address object that has any of its
+	// bytes in that bucket.
+	bucketSize uint64
+	idx []ObjId
 }
 
 type Type struct {
@@ -213,9 +214,9 @@ func (d *Dump) findObj(addr uint64) ObjId {
 	if addr < d.HeapStart || addr >= d.HeapEnd { // quick exit.  Includes nil.
 		return ObjNil
 	}
-	// linear search among all the objects that map to the same bucketSize byte bucket.
-	for i := d.idx[(addr-d.HeapStart)/bucketSize]; i < len(d.objects); i++ {
-		x := d.objects[i]
+	// linear search among all the objects that map to the same bucketSize-byte bucket.
+	for i := d.idx[(addr-d.HeapStart)/bucketSize]; i < ObjId(len(d.objects)); i++ {
+		x := &d.objects[i]
 		if addr < x.Addr {
 			return ObjNil
 		}
@@ -227,7 +228,7 @@ func (d *Dump) findObj(addr uint64) ObjId {
 }
 
 func (d *Dump) Edges(i ObjId) []Edge {
-	x := d.objects[i]
+	x := &d.objects[i]
 	e := d.edges[:0]
 	b := d.Contents(i)
 	for _, f := range x.Ft.Fields {
@@ -1362,14 +1363,19 @@ func link(d *Dump) {
 	sort.Sort(byAddr(d.objects))
 
 	// initialize index array
-	idx := make([]int, (d.HeapEnd-d.HeapStart)/bucketSize)
-	for i := 0; i < len(idx); i++ {
-		idx[i] = len(d.objects)
+	d.idx = make([]ObjId, (d.HeapEnd-d.HeapStart+bucketSize-1)/bucketSize)
+	for i := len(d.idx) - 1; i >= 0; i-- {
+		d.idx[i] = ObjId(len(d.objects))
 	}
 	for i := len(d.objects) - 1; i >= 0; i-- {
-		idx[(d.objects[i].Addr-d.HeapStart)/bucketSize] = i
+		// Note: we iterate in reverse order so that the object with
+		// the lowest address that intersects a bucket will win.
+		lo := (d.objects[i].Addr - d.HeapStart) / bucketSize
+		hi := (d.objects[i].Addr + d.objects[i].Ft.Size - 1 - d.HeapStart) / bucketSize
+		for j := lo; j <= hi; j++ {
+			d.idx[j] = ObjId(i)
+		}
 	}
-	d.idx = idx
 
 	// initialize some maps used for linking
 	frames := make(map[frameKey]*StackFrame, len(d.Frames))
