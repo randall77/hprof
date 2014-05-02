@@ -440,7 +440,7 @@ var mainTemplate = template.Must(template.New("histo").Parse(`
 <br>
 Heap size: {{.Memstats.Alloc}} bytes
 <br>
-Heap objects: {{len .Objects}}
+Heap objects: {{.NumObjects}}
 <br>
 <a href="histo">Type Histogram</a>
 <a href="globals">Globals</a>
