@@ -648,6 +648,7 @@ func (a ByState) Less(i, j int) bool { return a[i].State < a[j].State }
 
 type goInfo struct {
 	Addr   uint64
+	Obj    read.ObjId
 	State  string
 	Frames []string
 }
@@ -669,7 +670,7 @@ border:1px solid grey;
 </head>
 <body>
 <tt>
-<h2>Goroutine {{printf "%x" .Addr}}</h2>
+<h2>Goroutine <a href=obj?id={{.Obj}}>{{printf "%x" .Addr}}</a></h2>
 <h3>{{.State}}</h3>
 <h3>Stack</h3>
 {{range .Frames}}
@@ -707,6 +708,7 @@ func goHandler(w http.ResponseWriter, r *http.Request) {
 
 	var i goInfo
 	i.Addr = g.Addr
+	i.Obj = d.FindObj(g.Addr)
 	switch g.Status {
 	case 0:
 		i.State = "idle"
