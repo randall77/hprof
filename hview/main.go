@@ -444,6 +444,11 @@ func (a ByBytes) Len() int           { return len(a) }
 func (a ByBytes) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByBytes) Less(i, j int) bool { return a[i].Bytes > a[j].Bytes }
 
+type mainInfo struct {
+	HeapSize uint64
+	HeapUsed uint64
+	NumObjects int
+}
 var mainTemplate = template.Must(template.New("histo").Parse(`
 <html>
 <head>
@@ -454,7 +459,9 @@ var mainTemplate = template.Must(template.New("histo").Parse(`
 
 <h2>Heap dump viewer</h2>
 <br>
-Heap size: {{.Memstats.Alloc}} bytes
+Heap size: {{.HeapSize}} bytes
+<br>
+Heap live: {{.HeapUsed}} bytes
 <br>
 Heap objects: {{.NumObjects}}
 <br>
@@ -468,7 +475,8 @@ Heap objects: {{.NumObjects}}
 `))
 
 func mainHandler(w http.ResponseWriter, r *http.Request) {
-	if err := mainTemplate.Execute(w, d); err != nil {
+	i := mainInfo{d.HeapEnd - d.HeapStart, d.Memstats.Alloc, d.NumObjects()}
+	if err := mainTemplate.Execute(w, i); err != nil {
 		log.Print(err)
 	}
 }
