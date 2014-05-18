@@ -155,7 +155,7 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			typ = "raw bytes"
 			off += 16
 		case read.FieldKindPtr:
-			typ = "ptr"
+			typ = "*"+f.BaseType
 			// TODO: get ptr base type somehow?  Also for slices,chans.
 			if len(edges) > 0 && edges[0].FromOffset == off {
 				value = edgeLink(edges[0])
@@ -166,7 +166,7 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			off += d.PtrSize
 		case read.FieldKindIface:
 			// TODO: the itab part?
-			typ = "interface{...}"
+			typ = "interface{...}"+f.BaseType
 			if len(edges) > 0 && edges[0].FromOffset == off+d.PtrSize {
 				value = edgeLink(edges[0])
 				edges = edges[1:]
@@ -199,7 +199,7 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			value = fmt.Sprintf("%s/%d", value, readPtr(b[off+d.PtrSize:]))
 			off += 2 * d.PtrSize
 		case read.FieldKindSlice:
-			typ = "slice"
+			typ = "[]"+f.BaseType
 			if len(edges) > 0 && edges[0].FromOffset == off {
 				value = edgeLink(edges[0])
 				edges = edges[1:]

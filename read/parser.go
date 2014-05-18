@@ -50,23 +50,24 @@ const (
 	TypeKindChan                  = 2
 	TypeKindConservative          = 127
 
-	tagEOF        = 0
-	tagObject     = 1
-	tagOtherRoot  = 2
-	tagType       = 3
-	tagGoRoutine  = 4
-	tagStackFrame = 5
-	tagParams     = 6
-	tagFinalizer  = 7
-	tagItab       = 8
-	tagOSThread   = 9
-	tagMemStats   = 10
-	tagQFinal     = 11
-	tagData       = 12
-	tagBss        = 13
-	tagDefer      = 14
-	tagPanic      = 15
-	tagMemProf    = 16
+	tagEOF         = 0
+	tagObject      = 1
+	tagOtherRoot   = 2
+	tagType        = 3
+	tagGoRoutine   = 4
+	tagStackFrame  = 5
+	tagParams      = 6
+	tagFinalizer   = 7
+	tagItab        = 8
+	tagOSThread    = 9
+	tagMemStats    = 10
+	tagQFinal      = 11
+	tagData        = 12
+	tagBss         = 13
+	tagDefer       = 14
+	tagPanic       = 15
+	tagMemProf     = 16
+	tagAllocSample = 17
 
 	// DWARF constants
 	dw_op_call_frame_cfa = 156
@@ -109,6 +110,7 @@ type Dump struct {
 	Defers     []*Defer
 	Panics     []*Panic
 	MemProf    []*MemProfEntry
+	AllocSamples []*AllocSample
 
 	// handle to dump file
 	r io.ReaderAt
@@ -327,11 +329,18 @@ type MemProfFrame struct {
 	File string
 	Line uint64
 }
+
 type MemProfEntry struct {
+	addr uint64
 	size uint64
 	stack []MemProfFrame
 	allocs uint64
 	frees uint64
+}
+
+type AllocSample struct {
+	Addr    uint64        // address of object
+	Prof    *MemProfEntry // record of allocation site
 }
 
 type Data struct {
@@ -353,6 +362,7 @@ type Field struct {
 	Kind   FieldKind
 	Offset uint64
 	Name   string
+	BaseType   string // base type for Ptr, Slice, Iface ("" if not known)
 }
 
 type GoRoutine struct {
@@ -534,6 +544,7 @@ func rawRead(filename string) *Dump {
 	d.ItabMap = map[uint64]bool{}
 	d.TypeMap = map[uint64]*Type{}
 	ftmap := map[tkey]*FullType{} // full type dedup
+	memprof := map[uint64]*MemProfEntry{}
 	for {
 		kind := readUint64(r)
 		switch kind {
@@ -703,6 +714,7 @@ func rawRead(filename string) *Dump {
 			d.Panics = append(d.Panics, t)
 		case tagMemProf:
 			t := &MemProfEntry{}
+			key := readUint64(r)
 			t.size = readUint64(r)
 			nstk := readUint64(r)
 			for i := uint64(0); i < nstk; i++ {
@@ -715,6 +727,12 @@ func rawRead(filename string) *Dump {
 			t.allocs = readUint64(r)
 			t.frees = readUint64(r)
 			d.MemProf = append(d.MemProf, t)
+			memprof[key] = t
+		case tagAllocSample:
+			t := &AllocSample{}
+			t.Addr = readUint64(r)
+			t.Prof = memprof[readUint64(r)]
+			d.AllocSamples = append(d.AllocSamples, t)
 		default:
 			log.Fatal("unknown record kind ", kind)
 		}
@@ -838,31 +856,31 @@ func (t *dwarfBaseType) Fields() []Field {
 	}
 	switch {
 	case t.encoding == dw_ate_boolean:
-		t.fields = append(t.fields, Field{FieldKindBool, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindBool, 0, "", ""})
 	case t.encoding == dw_ate_signed && t.size == 1:
-		t.fields = append(t.fields, Field{FieldKindSInt8, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindSInt8, 0, "", ""})
 	case t.encoding == dw_ate_unsigned && t.size == 1:
-		t.fields = append(t.fields, Field{FieldKindUInt8, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindUInt8, 0, "", ""})
 	case t.encoding == dw_ate_signed && t.size == 2:
-		t.fields = append(t.fields, Field{FieldKindSInt16, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindSInt16, 0, "", ""})
 	case t.encoding == dw_ate_unsigned && t.size == 2:
-		t.fields = append(t.fields, Field{FieldKindUInt16, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindUInt16, 0, "", ""})
 	case t.encoding == dw_ate_signed && t.size == 4:
-		t.fields = append(t.fields, Field{FieldKindSInt32, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindSInt32, 0, "", ""})
 	case t.encoding == dw_ate_unsigned && t.size == 4:
-		t.fields = append(t.fields, Field{FieldKindUInt32, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindUInt32, 0, "", ""})
 	case t.encoding == dw_ate_signed && t.size == 8:
-		t.fields = append(t.fields, Field{FieldKindSInt64, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindSInt64, 0, "", ""})
 	case t.encoding == dw_ate_unsigned && t.size == 8:
-		t.fields = append(t.fields, Field{FieldKindUInt64, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindUInt64, 0, "", ""})
 	case t.encoding == dw_ate_float && t.size == 4:
-		t.fields = append(t.fields, Field{FieldKindFloat32, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindFloat32, 0, "", ""})
 	case t.encoding == dw_ate_float && t.size == 8:
-		t.fields = append(t.fields, Field{FieldKindFloat64, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindFloat64, 0, "", ""})
 	case t.encoding == dw_ate_complex_float && t.size == 8:
-		t.fields = append(t.fields, Field{FieldKindComplex64, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindComplex64, 0, "", ""})
 	case t.encoding == dw_ate_complex_float && t.size == 16:
-		t.fields = append(t.fields, Field{FieldKindComplex128, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindComplex128, 0, "", ""})
 	default:
 		log.Fatalf("unknown encoding type encoding=%d size=%d", t.encoding, t.size)
 	}
@@ -874,15 +892,20 @@ func (t *dwarfTypedef) Fields() []Field {
 func (t *dwarfTypedef) Size() uint64 {
 	return t.type_.Size()
 }
+var unkBase = "unkBase"
 func (t *dwarfPtrType) Fields() []Field {
 	if t.fields == nil {
-		t.fields = append(t.fields, Field{FieldKindPtr, 0, ""})
+		if t.Name()[0] == '*' {
+			t.fields = append(t.fields, Field{FieldKindPtr, 0, "", t.Name()[1:]})
+		} else {
+			t.fields = append(t.fields, Field{FieldKindPtr, 0, "", unkBase})
+		}
 	}
 	return t.fields
 }
 func (t *dwarfFuncType) Fields() []Field {
 	if t.fields == nil {
-		t.fields = append(t.fields, Field{FieldKindPtr, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindPtr, 0, "", unkBase})
 	}
 	return t.fields
 }
@@ -895,11 +918,11 @@ func (t *dwarfStructType) Fields() []Field {
 	// Don't look inside strings, interfaces, slices.
 	switch {
 	case t.name == "string":
-		t.fields = append(t.fields, Field{FieldKindString, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindString, 0, "", ""})
 	case t.name == "runtime.iface":
-		t.fields = append(t.fields, Field{FieldKindIface, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindIface, 0, "", unkBase})
 	case t.name == "runtime.eface":
-		t.fields = append(t.fields, Field{FieldKindEface, 0, ""})
+		t.fields = append(t.fields, Field{FieldKindEface, 0, "", ""})
 	default:
 		// Detect slices.  TODO: This could be fooled by the right user
 		// code, so find a better way.
@@ -914,14 +937,15 @@ func (t *dwarfStructType) Fields() []Field {
 			l, lok := t.members[1].type_.(*dwarfBaseType)
 			c, cok := t.members[2].type_.(*dwarfBaseType)
 			if aok && lok && cok && l.encoding == dw_ate_unsigned && c.encoding == dw_ate_unsigned {
-				t.fields = append(t.fields, Field{FieldKindSlice, 0, ""})
+				t.fields = append(t.fields, Field{FieldKindSlice, 0, "", t.members[0].type_.Name()[1:]})
+				fmt.Println("slice", t.members[0].type_.Name()[1:])
 				break
 			}
 		}
 
 		for _, m := range t.members {
 			for _, f := range m.type_.Fields() {
-				t.fields = append(t.fields, Field{f.Kind, m.offset + f.Offset, joinNames(m.name, f.Name)})
+				t.fields = append(t.fields, Field{f.Kind, m.offset + f.Offset, joinNames(m.name, f.Name), f.BaseType})
 			}
 		}
 	}
@@ -939,7 +963,7 @@ func (t *dwarfArrayType) Fields() []Field {
 	fields := t.elem.Fields()
 	for i := uint64(0); i < n; i++ {
 		for _, f := range fields {
-			t.fields = append(t.fields, Field{f.Kind, i*s + f.Offset, joinNames(fmt.Sprintf("%d", i), f.Name)})
+			t.fields = append(t.fields, Field{f.Kind, i*s + f.Offset, joinNames(fmt.Sprintf("%d", i), f.Name), f.BaseType})
 		}
 	}
 	return t.fields
@@ -1174,11 +1198,11 @@ func globalsMap(d *Dump, w *dwarf.Data, t map[dwarf.Offset]dwarfType) *heap {
 		loc := readPtr(d, locexpr[1:])
 		if typ == nil {
 			// lots of non-Go global symbols hit here (rodata, reflect.cvtFloat·f, ...)
-			h.Insert(loc, Field{FieldKindPtr, 0, "~" + name})
+			h.Insert(loc, Field{FieldKindPtr, 0, "~" + name, ""})
 			continue
 		}
 		for _, f := range typ.Fields() {
-			h.Insert(loc+f.Offset, Field{f.Kind, 0, joinNames(name, f.Name)})
+			h.Insert(loc+f.Offset, Field{f.Kind, 0, joinNames(name, f.Name), f.BaseType})
 		}
 	}
 	return h
@@ -1494,7 +1518,7 @@ func nameFullTypes(d *Dump) {
 		case ft.Typ == nil && ft.Kind == TypeKindConservative:
 			// could all be pointers
 			for i := uint64(0); i < ft.Size; i += d.PtrSize {
-				ft.Fields = append(ft.Fields, Field{FieldKindPtr, i, fmt.Sprintf("~%d", i)})
+				ft.Fields = append(ft.Fields, Field{FieldKindPtr, i, fmt.Sprintf("~%d", i), ""})
 			}
 		case ft.Typ == nil && ft.Kind == TypeKindObject:
 			// no pointers.  Emit psuedo field records
@@ -1505,9 +1529,9 @@ func nameFullTypes(d *Dump) {
 				}
 				switch s {
 				case 16:
-					ft.Fields = append(ft.Fields, Field{FieldKindBytes16, i, fmt.Sprintf("offset %x", i)})
+					ft.Fields = append(ft.Fields, Field{FieldKindBytes16, i, fmt.Sprintf("offset %x", i), ""})
 				case 8:
-					ft.Fields = append(ft.Fields, Field{FieldKindBytes8, i, fmt.Sprintf("offset %x", i)})
+					ft.Fields = append(ft.Fields, Field{FieldKindBytes8, i, fmt.Sprintf("offset %x", i), ""})
 				default:
 					log.Fatalf("weird size obj", ft.Size)
 				}
@@ -1524,7 +1548,7 @@ func nameFullTypes(d *Dump) {
 					} else {
 						name = fmt.Sprintf("%d", i/t.Size)
 					}
-					ft.Fields = append(ft.Fields, Field{f.Kind, i + f.Offset, name})
+					ft.Fields = append(ft.Fields, Field{f.Kind, i + f.Offset, name, f.BaseType})
 				}
 			}
 		case ft.Typ != nil && ft.Kind == TypeKindChan:
@@ -1538,9 +1562,9 @@ func nameFullTypes(d *Dump) {
 			}
 			for i := uint64(0); i < d.HChanSize; i += d.PtrSize {
 				if name, ok := fmap[i]; ok {
-					ft.Fields = append(ft.Fields, Field{k, i, name})
+					ft.Fields = append(ft.Fields, Field{k, i, name, ""})
 				} else {
-					ft.Fields = append(ft.Fields, Field{k, i, "chanhdr"})
+					ft.Fields = append(ft.Fields, Field{k, i, "chanhdr", ""})
 				}
 			}
 			if t.Size > 0 {
@@ -1552,7 +1576,7 @@ func nameFullTypes(d *Dump) {
 						} else {
 							name = fmt.Sprintf("%d", (i-d.HChanSize)/t.Size)
 						}
-						ft.Fields = append(ft.Fields, Field{f.Kind, i + f.Offset, name})
+						ft.Fields = append(ft.Fields, Field{f.Kind, i + f.Offset, name, f.BaseType})
 					}
 				}
 			}
