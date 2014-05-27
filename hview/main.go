@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultAddr = ":8080" // default webserver address
-	maxFields = 4096
+	maxFields   = 4096
 )
 
 var (
@@ -155,7 +155,7 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			typ = "raw bytes"
 			off += 16
 		case read.FieldKindPtr:
-			typ = "*"+f.BaseType
+			typ = "*" + f.BaseType
 			// TODO: get ptr base type somehow?  Also for slices,chans.
 			if len(edges) > 0 && edges[0].FromOffset == off {
 				value = edgeLink(edges[0])
@@ -166,7 +166,7 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			off += d.PtrSize
 		case read.FieldKindIface:
 			// TODO: the itab part?
-			typ = "interface{...}"+f.BaseType
+			typ = "interface{...}" + f.BaseType
 			if len(edges) > 0 && edges[0].FromOffset == off+d.PtrSize {
 				value = edgeLink(edges[0])
 				edges = edges[1:]
@@ -199,7 +199,7 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			value = fmt.Sprintf("%s/%d", value, readPtr(b[off+d.PtrSize:]))
 			off += 2 * d.PtrSize
 		case read.FieldKindSlice:
-			typ = "[]"+f.BaseType
+			typ = "[]" + f.BaseType
 			if len(edges) > 0 && edges[0].FromOffset == off {
 				value = edgeLink(edges[0])
 				edges = edges[1:]
@@ -292,14 +292,14 @@ func objHandler(w http.ResponseWriter, r *http.Request) {
 
 	fld := getFields(d.Contents(x), d.Ft(x).Fields, d.Edges(x))
 	if len(fld) > maxFields {
-		msg := fmt.Sprintf("<font color=Red>elided for display: %d fields</font>", len(fld) - (maxFields-1))
+		msg := fmt.Sprintf("<font color=Red>elided for display: %d fields</font>", len(fld)-(maxFields-1))
 		fld = fld[:maxFields-1]
-		fld = append(fld, Field{msg,"",""})
+		fld = append(fld, Field{msg, "", ""})
 	}
 
 	ref := getReferrers(x)
 	if len(ref) > maxFields {
-		msg := fmt.Sprintf("<font color=Red>elided for display: %d referrers</font>", len(ref) - (maxFields - 1))
+		msg := fmt.Sprintf("<font color=Red>elided for display: %d referrers</font>", len(ref)-(maxFields-1))
 		ref = ref[:maxFields-1]
 		ref = append(ref, msg)
 	}
@@ -443,10 +443,11 @@ func (a ByBytes) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByBytes) Less(i, j int) bool { return a[i].Bytes > a[j].Bytes }
 
 type mainInfo struct {
-	HeapSize uint64
-	HeapUsed uint64
+	HeapSize   uint64
+	HeapUsed   uint64
 	NumObjects int
 }
+
 var mainTemplate = template.Must(template.New("histo").Parse(`
 <html>
 <head>
@@ -865,8 +866,8 @@ func main() {
 	args := flag.Args()
 	switch len(args) {
 	case 1:
-	     dump = args[0]
-	     exec = ""
+		dump = args[0]
+		exec = ""
 	case 2:
 		dump = args[0]
 		exec = args[1]
