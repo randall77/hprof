@@ -861,13 +861,22 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 
-	fmt.Println("Loading...")
+	var dump, exec string
 	args := flag.Args()
-	if len(args) == 1 {
-		d = read.Read(args[0], "")
-	} else {
-		d = read.Read(args[0], args[1])
+	switch len(args) {
+	case 1:
+	     dump = args[0]
+	     exec = ""
+	case 2:
+		dump = args[0]
+		exec = args[1]
+	default:
+		usage()
+		return
 	}
+
+	fmt.Println("Loading...")
+	d = read.Read(dump, exec)
 
 	fmt.Println("Analyzing...")
 	prepare()
