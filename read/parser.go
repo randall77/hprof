@@ -938,7 +938,6 @@ func (t *dwarfStructType) Fields() []Field {
 			c, cok := t.members[2].type_.(*dwarfBaseType)
 			if aok && lok && cok && l.encoding == dw_ate_unsigned && c.encoding == dw_ate_unsigned {
 				t.fields = append(t.fields, Field{FieldKindSlice, 0, "", t.members[0].type_.Name()[1:]})
-				fmt.Println("slice", t.members[0].type_.Name()[1:])
 				break
 			}
 		}
