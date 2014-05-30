@@ -42,8 +42,8 @@ const (
 	FieldKindComplex64            = 17
 	FieldKindComplex128           = 18
 
-	FieldKindBytes8  = 19
-	FieldKindBytes16 = 20
+	FieldKindBytes8      = 19
+	FieldKindBytes16     = 20
 	FieldKindBytesElided = 21
 
 	TypeKindObject       TypeKind = 0
@@ -89,28 +89,28 @@ const (
 )
 
 type Dump struct {
-	Order      binary.ByteOrder
-	PtrSize    uint64 // in bytes
-	HChanSize  uint64 // channel header size in bytes
-	HeapStart  uint64
-	HeapEnd    uint64
-	TheChar    byte
-	Experiment string
-	Ncpu       uint64
-	Types      []*Type
-	objects    []object
-	Frames     []*StackFrame
-	Goroutines []*GoRoutine
-	Otherroots []*OtherRoot
-	Finalizers []*Finalizer  // pending finalizers, object still live
-	QFinal     []*QFinalizer // finalizers which are ready to run
-	Osthreads  []*OSThread
-	Memstats   *runtime.MemStats
-	Data       *Data
-	Bss        *Data
-	Defers     []*Defer
-	Panics     []*Panic
-	MemProf    []*MemProfEntry
+	Order        binary.ByteOrder
+	PtrSize      uint64 // in bytes
+	HChanSize    uint64 // channel header size in bytes
+	HeapStart    uint64
+	HeapEnd      uint64
+	TheChar      byte
+	Experiment   string
+	Ncpu         uint64
+	Types        []*Type
+	objects      []object
+	Frames       []*StackFrame
+	Goroutines   []*GoRoutine
+	Otherroots   []*OtherRoot
+	Finalizers   []*Finalizer  // pending finalizers, object still live
+	QFinal       []*QFinalizer // finalizers which are ready to run
+	Osthreads    []*OSThread
+	Memstats     *runtime.MemStats
+	Data         *Data
+	Bss          *Data
+	Defers       []*Defer
+	Panics       []*Panic
+	MemProf      []*MemProfEntry
 	AllocSamples []*AllocSample
 
 	// handle to dump file
@@ -135,7 +135,7 @@ type Dump struct {
 	// track of the lowest address object that has any of its
 	// bytes in that bucket.
 	bucketSize uint64
-	idx []ObjId
+	idx        []ObjId
 }
 
 type Type struct {
@@ -332,16 +332,16 @@ type MemProfFrame struct {
 }
 
 type MemProfEntry struct {
-	addr uint64
-	size uint64
-	stack []MemProfFrame
+	addr   uint64
+	size   uint64
+	stack  []MemProfFrame
 	allocs uint64
-	frees uint64
+	frees  uint64
 }
 
 type AllocSample struct {
-	Addr    uint64        // address of object
-	Prof    *MemProfEntry // record of allocation site
+	Addr uint64        // address of object
+	Prof *MemProfEntry // record of allocation site
 }
 
 type Data struct {
@@ -360,10 +360,10 @@ type OSThread struct {
 // A Field is a location in an object where there
 // might be a pointer.
 type Field struct {
-	Kind   FieldKind
-	Offset uint64
-	Name   string
-	BaseType   string // base type for Ptr, Slice, Iface ("" if not known)
+	Kind     FieldKind
+	Offset   uint64
+	Name     string
+	BaseType string // base type for Ptr, Slice, Iface ("" if not known)
 }
 
 type GoRoutine struct {
@@ -893,7 +893,9 @@ func (t *dwarfTypedef) Fields() []Field {
 func (t *dwarfTypedef) Size() uint64 {
 	return t.type_.Size()
 }
+
 var unkBase = "unkBase"
+
 func (t *dwarfPtrType) Fields() []Field {
 	if t.fields == nil {
 		if t.Name()[0] == '*' {
