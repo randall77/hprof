@@ -44,6 +44,7 @@ const (
 
 	FieldKindBytes8  = 19
 	FieldKindBytes16 = 20
+	FieldKindBytesElided = 21
 
 	TypeKindObject       TypeKind = 0
 	TypeKindArray                 = 1
@@ -1522,6 +1523,12 @@ func nameFullTypes(d *Dump) {
 		case ft.Typ == nil && ft.Kind == TypeKindObject:
 			// no pointers.  Emit psuedo field records
 			for i := uint64(0); i < ft.Size; i += 16 {
+				if i >= 1<<16 {
+					// ignore >64KB of data
+					ft.Fields = append(ft.Fields, Field{FieldKindBytesElided, i, fmt.Sprintf("offset %x", i), ""})
+					i = ft.Size
+					break
+				}
 				s := ft.Size - i
 				if s > 16 {
 					s = 16

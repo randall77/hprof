@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultAddr = ":8080" // default webserver address
-	maxFields = 4096
+	maxFields = 4096+1
 )
 
 var (
@@ -208,6 +208,10 @@ func getFields(b []byte, fields []read.Field, edges []read.Edge) []Field {
 			}
 			value = fmt.Sprintf("%s/%d/%d", value, readPtr(b[off+d.PtrSize:]), readPtr(b[off+2*d.PtrSize:]))
 			off += 3 * d.PtrSize
+		case read.FieldKindBytesElided:
+			typ = "raw bytes"
+			value = fmt.Sprintf("... %d elided bytes ...", uint64(len(b)) - off)
+			off = uint64(len(b))
 		}
 		r = append(r, Field{f.Name, typ, value})
 	}
