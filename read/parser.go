@@ -609,6 +609,7 @@ func rawRead(filename string) *Dump {
 			t.Data = readBytes(r)
 			t.entry = readUint64(r)
 			t.pc = readUint64(r)
+			readUint64(r) // continpc
 			t.Name = readString(r)
 			t.Fields = readFields(r)
 			d.Frames = append(d.Frames, t)
