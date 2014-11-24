@@ -1000,6 +1000,10 @@ func typeMap(d *Dump, w *dwarf.Data) map[dwarf.Offset]dwarfType {
 		if e == nil {
 			break
 		}
+		if e.Val(dwarf.AttrName) == nil {
+			// Dwarf info from non-go sources might be missing a name
+			continue
+		}
 		switch e.Tag {
 		case dwarf.TagBaseType:
 			x := new(dwarfBaseType)
