@@ -94,8 +94,8 @@ type Dump struct {
 	HChanSize    uint64 // channel header size in bytes
 	HeapStart    uint64
 	HeapEnd      uint64
-	TheChar      byte
 	Experiment   string
+	Arch         string
 	Ncpu         uint64
 	Types        []*Type
 	objects      []object
@@ -126,9 +126,8 @@ type Dump struct {
 	// map from type address to type
 	TypeMap map[uint64]*Type
 
-	// map from itab address whether the data field of an iface
-	// with that itab contains a pointer.
-	ItabMap map[uint64]bool
+	// map from the address of an interface to the address of the type
+	ItabMap map[uint64]uint64
 
 	// Data structure for fast lookup of objects.  Divides the heap
 	// into chunks of bucketSize bytes.  For each bucket, we keep
@@ -171,9 +170,9 @@ type Edge struct {
 // object represents an object in the heap.
 // There will be a lot of these.  They need to be small.
 type object struct {
-	Ft     *FullType
-	offset int64 // position of object contents in dump file
-	Addr   uint64
+	Addr     uint64
+	Fields   []Field
+	Contents string
 }
 
 type ObjId int
@@ -189,27 +188,13 @@ func (d *Dump) NumObjects() int {
 }
 func (d *Dump) Contents(i ObjId) []byte {
 	x := d.objects[i]
-	b := d.buf
-	if uint64(cap(b)) < x.Ft.Size {
-		b = make([]byte, x.Ft.Size)
-		d.buf = b
-	}
-	b = b[:x.Ft.Size]
-	n, err := d.r.ReadAt(b, x.offset)
-	if err != nil && !(n == len(b) && err == io.EOF) {
-		// TODO: propagate to caller
-		log.Fatal(err)
-	}
-	return b
+	return []byte(x.Contents)
 }
 func (d *Dump) Addr(x ObjId) uint64 {
 	return d.objects[x].Addr
 }
 func (d *Dump) Size(x ObjId) uint64 {
-	return d.objects[x].Ft.Size
-}
-func (d *Dump) Ft(x ObjId) *FullType {
-	return d.objects[x].Ft
+	return uint64(len(d.Contents(x)))
 }
 
 // FindObj returns the object id containing the address addr, or -1 if no object contains addr.
@@ -223,7 +208,7 @@ func (d *Dump) FindObj(addr uint64) ObjId {
 		if addr < x.Addr {
 			return ObjNil
 		}
-		if addr < x.Addr+x.Ft.Size {
+		if addr < x.Addr+d.Size(i) {
 			return ObjId(i)
 		}
 	}
@@ -234,7 +219,7 @@ func (d *Dump) Edges(i ObjId) []Edge {
 	x := &d.objects[i]
 	e := d.edges[:0]
 	b := d.Contents(i)
-	for _, f := range x.Ft.Fields {
+	for _, f := range x.Fields {
 		switch f.Kind {
 		case FieldKindPtr, FieldKindString, FieldKindSlice:
 			p := readPtr(d, b[f.Offset:])
@@ -260,7 +245,8 @@ func (d *Dump) Edges(i ObjId) []Edge {
 		case FieldKindIface:
 			itabaddr := readPtr(d, b[f.Offset:])
 			if itabaddr != 0 {
-				ptr, ok := d.ItabMap[itabaddr]
+				typeAddr, ok := d.ItabMap[itabaddr]
+				ptr := d.TypeMap[typeAddr].efaceptr
 				if !ok {
 					log.Fatal("can't find itab", itabaddr)
 				}
@@ -536,15 +522,14 @@ func rawRead(filename string) *Dump {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if prefix || string(hdr) != "go1.3 heap dump" {
-		log.Fatal("not a go1.3 heap dump file")
+	if prefix || string(hdr) != "go1.7 heap dump" {
+		log.Fatal("not a go1.7 heap dump file")
 	}
 
 	var d Dump
 	d.r = file
-	d.ItabMap = map[uint64]bool{}
+	d.ItabMap = map[uint64]uint64{}
 	d.TypeMap = map[uint64]*Type{}
-	ftmap := map[tkey]*FullType{} // full type dedup
 	memprof := map[uint64]*MemProfEntry{}
 	for {
 		kind := readUint64(r)
@@ -552,18 +537,8 @@ func rawRead(filename string) *Dump {
 		case tagObject:
 			obj := object{}
 			obj.Addr = readUint64(r)
-			typaddr := readUint64(r)
-			kind := TypeKind(readUint64(r))
-			size := readUint64(r)
-			k := tkey{typaddr, kind, size}
-			ft := ftmap[k]
-			if ft == nil {
-				ft = d.makeFullType(typaddr, kind, size)
-				ftmap[k] = ft
-			}
-			obj.Ft = ft
-			obj.offset = r.Count()
-			r.Skip(int64(ft.Size))
+			obj.Contents = readString(r)
+			obj.Fields = readFields(r)
 			d.objects = append(d.objects, obj)
 		case tagEOF:
 			return &d
@@ -578,8 +553,6 @@ func rawRead(filename string) *Dump {
 			typ.Size = readUint64(r)
 			typ.Name = readString(r)
 			typ.efaceptr = readBool(r)
-			typ.Fields = readFields(r)
-			// Note: there may be duplicate type records in a dump.
 			// The duplicates get thrown away here.
 			if _, ok := d.TypeMap[typ.Addr]; !ok {
 				d.TypeMap[typ.Addr] = typ
@@ -614,16 +587,15 @@ func rawRead(filename string) *Dump {
 			t.Fields = readFields(r)
 			d.Frames = append(d.Frames, t)
 		case tagParams:
-			if readUint64(r) == 0 {
+			if readBool(r) == false {
 				d.Order = binary.LittleEndian
 			} else {
 				d.Order = binary.BigEndian
 			}
 			d.PtrSize = readUint64(r)
-			d.HChanSize = readUint64(r)
 			d.HeapStart = readUint64(r)
 			d.HeapEnd = readUint64(r)
-			d.TheChar = byte(readUint64(r))
+			d.Arch = readString(r)
 			d.Experiment = readString(r)
 			d.Ncpu = readUint64(r)
 		case tagFinalizer:
@@ -656,8 +628,8 @@ func rawRead(filename string) *Dump {
 			d.Bss = t
 		case tagItab:
 			addr := readUint64(r)
-			ptr := readBool(r)
-			d.ItabMap[addr] = ptr
+			typeAddr := readUint64(r)
+			d.ItabMap[addr] = typeAddr
 		case tagOSThread:
 			t := &OSThread{}
 			t.addr = readUint64(r)
@@ -736,7 +708,7 @@ func rawRead(filename string) *Dump {
 			t.Prof = memprof[readUint64(r)]
 			d.AllocSamples = append(d.AllocSamples, t)
 		default:
-			log.Fatal("unknown record kind ", kind)
+			log.Print("unknown record kind ", kind)
 		}
 	}
 	// TODO: any easy way to truncate the objects array?  We could
@@ -1264,7 +1236,8 @@ func (d *Dump) appendFields(edges []Edge, data []byte, fields []Field) []Edge {
 		case FieldKindIface:
 			tp := readPtr(d, data[off:])
 			if tp != 0 {
-				if d.ItabMap[tp] {
+				ptr := d.TypeMap[d.ItabMap[tp]].efaceptr
+				if ptr {
 					edges = d.appendEdge(edges, data, off+d.PtrSize, f)
 				}
 			}
@@ -1402,7 +1375,7 @@ func link(d *Dump) {
 		// Note: we iterate in reverse order so that the object with
 		// the lowest address that intersects a bucket will win.
 		lo := (d.objects[i].Addr - d.HeapStart) / bucketSize
-		hi := (d.objects[i].Addr + d.objects[i].Ft.Size - 1 - d.HeapStart) / bucketSize
+		hi := (d.objects[i].Addr + d.Size(ObjId(i)) - 1 - d.HeapStart) / bucketSize
 		for j := lo; j <= hi; j++ {
 			d.idx[j] = ObjId(i)
 		}
