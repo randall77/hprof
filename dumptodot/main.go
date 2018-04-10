@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+
 	"github.com/randall77/hprof/read"
 )
 
@@ -80,7 +81,7 @@ func main() {
 		if !reachable[x] {
 			fmt.Printf("  v%d [style=filled fillcolor=gray];\n", x)
 		}
-		fmt.Printf("  v%d [label=\"%s\\n%d\"];\n", x, d.Ft(x).Name, d.Size(x))
+		fmt.Printf("  v%d [label=\"\\n%d\"];\n", x, d.Size(x))
 		for _, e := range d.Edges(x) {
 			var taillabel, headlabel string
 			if e.FieldName != "" {
